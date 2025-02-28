@@ -97,12 +97,12 @@ router.put('/profile/:user_id', async (req, res) => {
 });
 
 // API สำหรับอัปเดต Role (เฉพาะ Admin)
-router.put('/role/:userId', isAdmin, async (req, res) => {
-  const userId = req.params.userId;
+router.put('/role-by-employee/:employeeId', isAdmin, async (req, res) => {
+  const employeeId = req.params.employeeId;
   const { role } = req.body;
 
   try {
-    const user = await User.findById(userId);
+    const user = await User.findOne({ employeeId });
     if (!user) {
       return res.status(404).json({ status: "error", message: "User not found" });
     }
@@ -117,18 +117,11 @@ router.put('/role/:userId', isAdmin, async (req, res) => {
     res.status(200).json({
       status: "success",
       message: "User role updated successfully",
-      data: {
-        id: user._id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        employeeId: user.employeeId,
-        role: user.role
-      }
+      data: { id: user.employeeId, role: user.role }
     });
   } catch (error) {
-    console.error('Update role error:', error);
-    res.status(500).json({ status: "error", message: "Server error" });
+    console.error('Update role by employeeId error:', error.stack);
+    res.status(500).json({ status: "error", message: "Server error", details: error.message });
   }
 });
 
