@@ -1,14 +1,31 @@
+// index.js
 import express from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
+import path from 'path';
+import fs from 'fs';
 
 dotenv.config();
 
+// เพิ่มจำนวน listeners สูงสุด (ถ้าจำเป็น)
+import { EventEmitter } from 'events';
+EventEmitter.defaultMaxListeners = 15;
+
 const port = process.env.PORT || 3000;
 const app = express();
+
+// ตรวจสอบและสร้างโฟลเดอร์ uploads
+const uploadDir = './uploads';
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir, { recursive: true });
+  console.log('Created uploads directory');
+}
+
+// ให้บริการไฟล์ static จากโฟลเดอร์ uploads
+app.use('/uploads', express.static(path.join(path.resolve(), 'uploads')));
 
 app.use(express.json());
 app.use(cors());
@@ -25,6 +42,12 @@ app.use('/api/users', userRoutes);
 
 app.get('/api', (req, res) => {
   res.json({ message: "Hello, API Connected!" });
+});
+
+// เพิ่ม error handler เพื่อจัดการข้อผิดพลาดทั่วไป
+app.use((err, req, res, next) => {
+  console.error('Server error:', err);
+  res.status(500).json({ status: "error", message: "Internal server error" });
 });
 
 app.listen(port, () => {
