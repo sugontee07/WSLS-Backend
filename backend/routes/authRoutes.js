@@ -6,6 +6,7 @@ const router = express.Router();
 
 // Register Route
 router.post('/Register', async (req, res) => {
+  console.log(req.body);
   // Destructuring โดยไม่มี role เพื่อไม่รับจาก request
   const { firstName, lastName, department, employeeId, email, phoneNumber, password, confirmPassword } = req.body;
 

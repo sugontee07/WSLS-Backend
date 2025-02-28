@@ -108,7 +108,7 @@ router.get('/all', protect, isAdmin, async (req, res) => {
 });
 
 // Route สำหรับอัปเดตโปรไฟล์ผู้ใช้ตาม userId (ต้องล็อกอินก่อน)
-router.put('/profile/:user_id', protect, (req, res, next) => {
+router.put('/profile/me/:user_id', protect, (req, res, next) => {
   // ตรวจสอบว่าเป็น JSON หรือ multipart/form-data
   if (req.is('multipart/form-data')) {
     // รองรับทั้งฟิลด์ 'profilePicture' และ 'image'
@@ -269,6 +269,41 @@ router.put('/profile/:user_id', protect, (req, res, next) => {
       message: "Server error",
       details: error.message
     });
+  }
+});
+router.get('/profile/me/:user_id', protect, async (req, res) => {
+  try {
+    const userId = req.user.id; // ดึง userId จาก token ที่ decode แล้ว
+
+    const user = await User.findById(userId).select('-password -__v');
+    if (!user) {
+      return res.status(404).json({ status: "error", message: "User not found" });
+    }
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const userResponse = {
+      id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      employeeId: user.employeeId,
+      department: user.department,
+      role: user.role,
+      phoneNumber: user.phoneNumber,
+      profilePicture: user.profilePicture ? `${baseUrl}${user.profilePicture}` : '',
+      updated_at: user.updated_at
+    };
+
+    console.log('Sending user response:', userResponse);
+
+    res.status(200).json({
+      status: "success",
+      message: "User retrieved successfully",
+      data: userResponse
+    });
+  } catch (error) {
+    console.error('Fetch logged-in user error:', error);
+    res.status(500).json({ status: "error", message: "Server error", details: error.message });
   }
 });
 
