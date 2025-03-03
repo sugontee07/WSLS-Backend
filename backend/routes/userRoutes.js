@@ -60,7 +60,7 @@ router.get('/all', protect, isAdmin, async (req, res) => {
       .select('-password -__v')
       .sort({ employeeId: 1 });
 
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    // const baseUrl = `${req.protocol}://${req.get('host')}`;
     const usersWithFullUrl = users.map(user => ({
       id: user._id,
       firstName: user.firstName,
@@ -70,7 +70,7 @@ router.get('/all', protect, isAdmin, async (req, res) => {
       department: user.department,
       role: user.role,
       phoneNumber: user.phoneNumber,
-      profilePicture: user.profilePicture ? `${baseUrl}${user.profilePicture}` : '',
+      profilePicture: user.profilePicture ? `http://172.18.43.37:3000/${user.profilePicture}` : '',
       updated_at: user.updated_at
     }));
 
@@ -92,7 +92,7 @@ router.get('/profile/me', protect, async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'User not found' });
     }
 
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    // const baseUrl = `${req.protocol}://${req.get('host')}`;
     const userResponse = {
       id: user._id,
       firstName: user.firstName,
@@ -101,7 +101,7 @@ router.get('/profile/me', protect, async (req, res) => {
       employeeId: user.employeeId,
       department: user.department,
       phoneNumber: user.phoneNumber,
-      profilePicture: user.profilePicture ? `${baseUrl}${user.profilePicture}` : '',
+      profilePicture: user.profilePicture ? `http://172.18.43.37:3000/${user.profilePicture}` : '',
       role: user.role,
       updated_at: user.updated_at
     };
