@@ -1,11 +1,11 @@
 // routes/userRoutes.js
 import express from 'express';
 import { User } from '../model/User.js';
-import jwt from 'jsonwebtoken';
 import multer from 'multer';
 import path from 'path';
 import fsPromises from 'fs/promises';
 import fs from 'fs';
+import { protect, isAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -27,7 +27,7 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    const userId = req.params.user_id;
+    const userId = req.user.id; // ใช้ req.user.id จาก token
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     const ext = path.extname(file.originalname);
     const filename = `user_${userId}_${uniqueSuffix}${ext}`;
@@ -52,28 +52,6 @@ const upload = multer({
   },
   limits: { fileSize: 5 * 1024 * 1024 }
 });
-
-// Middleware ตรวจสอบผู้ใช้ (เปลี่ยนชื่อจาก authenticateUser เป็น protect เพื่อให้สอดคล้องกับโค้ดตัวอย่าง)
-const protect = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ status: "error", message: "No token provided" });
-
-  try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded;
-    next();
-  } catch (error) {
-    res.status(401).json({ status: "error", message: "Invalid token" });
-  }
-};
-
-// Middleware ตรวจสอบว่าเป็น Admin
-const isAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ status: "error", message: "Admin access required" });
-  }
-  next();
-};
 
 // API สำหรับดึงข้อมูลผู้ใช้ทั้งหมด
 router.get('/all', protect, isAdmin, async (req, res) => {
@@ -107,11 +85,9 @@ router.get('/all', protect, isAdmin, async (req, res) => {
   }
 });
 
-// Route สำหรับอัปเดตโปรไฟล์ผู้ใช้ตาม userId (ต้องล็อกอินก่อน)
-router.put('/profile/me/:user_id', protect, (req, res, next) => {
-  // ตรวจสอบว่าเป็น JSON หรือ multipart/form-data
+// API สำหรับดึงข้อมูลผู้ใช้ที่กำลังล็อกอินอยู่
+router.put('/profile/me', protect, (req, res, next) => {
   if (req.is('multipart/form-data')) {
-    // รองรับทั้งฟิลด์ 'profilePicture' และ 'image'
     upload.fields([
       { name: 'profilePicture', maxCount: 1 },
       { name: 'image', maxCount: 1 }
@@ -127,36 +103,24 @@ router.put('/profile/me/:user_id', protect, (req, res, next) => {
   }
 }, async (req, res) => {
   try {
-    const targetUserId = req.params.user_id;
-    const currentUserId = req.user.id;
-
-    // ตรวจสอบว่าเป็นผู้ใช้เองหรือมีสิทธิ์ admin
-    if (targetUserId !== currentUserId && req.user.role !== 'admin') {
-      return res.status(403).json({
-        status: "error",
-        message: 'You are not authorized to update this profile',
-      });
-    }
-
-    // หาผู้ใช้จาก userId
+    const targetUserId = req.user.id;
     const user = await User.findById(targetUserId).select('-password');
     if (!user) {
       return res.status(404).json({ status: "error", message: 'User not found' });
     }
 
     let updatedData = {};
-    let profilePictureUrl = user.profilePicture; // เก็บค่าเดิมไว้ก่อน
+    let profilePictureUrl = user.profilePicture;
 
-    // กรณีอัปโหลดไฟล์รูปภาพ (multipart/form-data)
+    // Handle file upload (multipart/form-data)
     const file = req.files?.['profilePicture']?.[0] || req.files?.['image']?.[0];
     if (file) {
       if (!file.mimetype.startsWith('image/')) {
         return res.status(400).json({ status: "error", message: 'Only image files are allowed' });
       }
 
-      // ลบรูปเก่าถ้ามี
       if (user.profilePicture) {
-        const oldImagePath = path.join(path.resolve(), user.profilePicture);
+        const oldImagePath = path.join(path.resolve(), user.profilePicture.replace(/^.*\/uploads\//, 'uploads/'));
         try {
           await fsPromises.unlink(oldImagePath);
           console.log(`Deleted old profile picture: ${oldImagePath}`);
@@ -165,17 +129,104 @@ router.put('/profile/me/:user_id', protect, (req, res, next) => {
         }
       }
 
-      // สร้าง URL สำหรับรูปใหม่
       const baseUrl = `${req.protocol}://${req.get('host')}`;
       profilePictureUrl = `${baseUrl}/uploads/${file.filename}`;
-      updatedData.profilePicture = profilePictureUrl; // อัปเดต URL รูปใหม่
+      updatedData.profilePicture = profilePictureUrl;
       console.log('New profile picture URL:', profilePictureUrl);
     }
 
-    // กรณีอัปเดตข้อมูลโปรไฟล์ (JSON)
+    // Handle profile data updates (multipart/form-data or JSON)
     const { firstName, lastName, department, email, phoneNumber, profilePicture } = req.body;
-    if (firstName || lastName || department || email || phoneNumber || profilePicture) {
-      // ตรวจสอบความถูกต้องของข้อมูล
+    if (firstName || lastName || department || email || phoneNumber || profilePicture || file) {
+      // ... validation and update logic ...
+      updatedData = {
+        ...updatedData,
+        firstName: firstName || user.firstName,
+        lastName: lastName || user.lastName,
+        department: department || user.department,
+        email: email || user.email,
+        phoneNumber: phoneNumber || user.phoneNumber,
+        profilePicture: profilePicture || profilePictureUrl,
+        updated_at: new Date()
+      };
+      } else {
+      return res.status(400).json({
+        status: "error",
+        message: 'No updates provided (neither profile data nor image)',
+      });
+    }
+
+    console.log('Sending user response:', userResponse);
+
+    res.status(200).json({
+      status: "success",
+      message: "User retrieved successfully",
+      data: userResponse
+    });
+  } catch (error) {
+    console.error('Fetch logged-in user error:', error);
+    res.status(500).json({ status: "error", message: "Server error", details: error.message });
+  }
+});
+
+// Route สำหรับอัปเดตโปรไฟล์ผู้ใช้ที่กำลังล็อกอินอยู่ (User และ Admin สามารถใช้งานได้)
+router.put('/profile/me/:userId', protect, (req, res, next) => {
+  if (req.is('multipart/form-data')) {
+    upload.fields([
+      { name: 'profilePicture', maxCount: 1 },
+      { name: 'image', maxCount: 1 }
+    ])(req, res, (err) => {
+      if (err) {
+        console.log('Multer error:', err.message);
+        return res.status(400).json({ status: "error", message: err.message });
+      }
+      next();
+    });
+  } else {
+    next();
+  }
+}, async (req, res) => {
+  try {
+    const targetUserId = req.user.id; // From JWT token
+    const urlUserId = req.params.userId; // From URL
+
+    // Optional: Ensure the user can only update their own profile
+    if (targetUserId !== urlUserId) {
+      return res.status(403).json({ status: "error", message: "Unauthorized: You can only update your own profile" });
+    }
+
+    const user = await User.findById(targetUserId).select('-password');
+    if (!user) {
+      return res.status(404).json({ status: "error", message: 'User not found' });
+    }
+
+    let updatedData = {};
+    let profilePictureUrl = user.profilePicture;
+
+    const file = req.files?.['profilePicture']?.[0] || req.files?.['image']?.[0];
+    if (file) {
+      if (!file.mimetype.startsWith('image/')) {
+        return res.status(400).json({ status: "error", message: 'Only image files are allowed' });
+      }
+
+      if (user.profilePicture) {
+        const oldImagePath = path.join(path.resolve(), user.profilePicture.replace(/^.*\/uploads\//, 'uploads/'));
+        try {
+          await fsPromises.unlink(oldImagePath);
+          console.log(`Deleted old profile picture: ${oldImagePath}`);
+        } catch (err) {
+          console.error(`Error deleting old profile picture: ${err.message}`);
+        }
+      }
+
+      const baseUrl = `${req.protocol}://${req.get('host')}`;
+      profilePictureUrl = `${baseUrl}/uploads/${file.filename}`;
+      updatedData.profilePicture = profilePictureUrl;
+      console.log('New profile picture URL:', profilePictureUrl);
+    }
+
+    const { firstName, lastName, department, email, phoneNumber, profilePicture } = req.body;
+    if (firstName || lastName || department || email || phoneNumber || profilePicture || file) {
       if (!firstName && !lastName && !department && !email && !phoneNumber && !profilePicture && !file) {
         return res.status(400).json({
           status: "error",
@@ -202,7 +253,6 @@ router.put('/profile/me/:user_id', protect, (req, res, next) => {
         return res.status(400).json({ status: "error", message: 'Invalid profile picture URL' });
       }
 
-      // ตรวจสอบอีเมลซ้ำ
       if (email && email !== user.email) {
         const existingEmail = await User.findOne({ email });
         if (existingEmail) {
@@ -217,17 +267,24 @@ router.put('/profile/me/:user_id', protect, (req, res, next) => {
         department: department || user.department,
         email: email || user.email,
         phoneNumber: phoneNumber || user.phoneNumber,
-        profilePicture: profilePicture || profilePictureUrl, // ใช้ profilePicture จาก body ถ้ามี หรือใช้ profilePictureUrl จากการอัปโหลด
+        profilePicture: profilePicture || profilePictureUrl,
         updated_at: new Date()
       };
-    } else if (!file) {
+    } else {
       return res.status(400).json({
         status: "error",
         message: 'No updates provided (neither profile data nor image)',
       });
     }
 
-    // อัปเดตข้อมูลใน MongoDB
+    if (updatedData.profilePicture) {
+      const imagePath = path.join(path.resolve(), updatedData.profilePicture.replace(/^.*\/uploads\//, 'uploads/'));
+      if (!fs.existsSync(imagePath)) {
+        console.log('Profile picture file does not exist:', imagePath);
+        updatedData.profilePicture = '';
+      }
+    }
+
     const updatedUser = await User.findByIdAndUpdate(
       targetUserId,
       updatedData,
@@ -251,12 +308,6 @@ router.put('/profile/me/:user_id', protect, (req, res, next) => {
       updated_at: updatedUser.updated_at
     };
 
-    console.log('Sending response:', {
-      status: "success",
-      message: "User profile updated successfully",
-      data: userResponse
-    });
-
     return res.status(200).json({
       status: "success",
       message: "User profile updated successfully",
@@ -269,70 +320,6 @@ router.put('/profile/me/:user_id', protect, (req, res, next) => {
       message: "Server error",
       details: error.message
     });
-  }
-});
-router.get('/profile/me/:user_id', protect, async (req, res) => {
-  try {
-    const userId = req.user.id; // ดึง userId จาก token ที่ decode แล้ว
-
-    const user = await User.findById(userId).select('-password -__v');
-    if (!user) {
-      return res.status(404).json({ status: "error", message: "User not found" });
-    }
-
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
-    const userResponse = {
-      id: user._id,
-      firstName: user.firstName,
-      lastName: user.lastName,
-      email: user.email,
-      employeeId: user.employeeId,
-      department: user.department,
-      role: user.role,
-      phoneNumber: user.phoneNumber,
-      profilePicture: user.profilePicture ? `${baseUrl}${user.profilePicture}` : '',
-      updated_at: user.updated_at
-    };
-
-    console.log('Sending user response:', userResponse);
-
-    res.status(200).json({
-      status: "success",
-      message: "User retrieved successfully",
-      data: userResponse
-    });
-  } catch (error) {
-    console.error('Fetch logged-in user error:', error);
-    res.status(500).json({ status: "error", message: "Server error", details: error.message });
-  }
-});
-
-// API สำหรับอัปเดต Role
-router.put('/role-by-employee/:employeeId', protect, isAdmin, async (req, res) => {
-  const employeeId = req.params.employeeId;
-  const { role } = req.body;
-
-  try {
-    const user = await User.findOne({ employeeId });
-    if (!user) {
-      return res.status(404).json({ status: "error", message: "User not found" });
-    }
-
-    if (!['user', 'admin'].includes(role)) {
-      return res.status(400).json({ status: "error", message: "Invalid role. Must be 'user' or 'admin'" });
-    }
-
-    user.role = role;
-    await user.save();
-
-    res.status(200).json({
-      status: "success",
-      message: "User role updated successfully",
-      data: { id: user.employeeId, role: user.role }
-    });
-  } catch (error) {
-    console.error('Update role by employeeId error:', error.stack);
-    res.status(500).json({ status: "error", message: "Server error", details: error.message });
   }
 });
 
