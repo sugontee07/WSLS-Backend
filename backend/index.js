@@ -5,8 +5,10 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
+import roleRoutes from './routes/roleRoutes.js';
 import path from 'path';
 import fs from 'fs';
+
 
 dotenv.config();
 
@@ -39,6 +41,7 @@ mongoose.connect(process.env.MONGO_URI, {
 
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/role', roleRoutes);
 
 app.get('/api', (req, res) => {
   res.json({ message: "Hello, API Connected!" });

@@ -1,11 +1,10 @@
-// routes/roleRoutes.js
 import express from 'express';
 import { User } from '../model/User.js';
 import { protect, isAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
 
-router.put('/role/:employeeId', protect, isAdmin, async (req, res) => {
+router.put('/change/:employeeId', protect, isAdmin, async (req, res) => {
   const { employeeId } = req.params;
   const { role } = req.body;
 
@@ -28,7 +27,7 @@ router.put('/role/:employeeId', protect, isAdmin, async (req, res) => {
     res.status(200).json({
       status: 'success',
       message: 'User role updated successfully',
-      data: { employeeId: user.employeeId, role: user.role }
+      data: { employeeId: user.employeeId, role: user.role },
     });
   } catch (error) {
     console.error('Update role error:', error.stack);
