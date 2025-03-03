@@ -85,6 +85,38 @@ router.get('/all', protect, isAdmin, async (req, res) => {
   }
 });
 
+router.get('/profile/me', protect, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select('-password');
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+
+    const baseUrl = `${req.protocol}://${req.get('host')}`;
+    const userResponse = {
+      id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      employeeId: user.employeeId,
+      department: user.department,
+      phoneNumber: user.phoneNumber,
+      profilePicture: user.profilePicture ? `${baseUrl}${user.profilePicture}` : '',
+      role: user.role,
+      updated_at: user.updated_at
+    };
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Profile retrieved successfully',
+      data: userResponse
+    });
+  } catch (error) {
+    console.error('Fetch profile error:', error.stack);
+    res.status(500).json({ status: 'error', message: 'Server error' });
+  }
+});
+
 // API สำหรับดึงข้อมูลผู้ใช้ที่กำลังล็อกอินอยู่
 router.put('/profile/me', protect, (req, res, next) => {
   if (req.is('multipart/form-data')) {
