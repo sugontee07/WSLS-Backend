@@ -19,6 +19,8 @@ const userSchema = new mongoose.Schema({
     enum: ["user", "admin"],
     default: "user",
   },
+  resetPasswordToken: { type: String }, // ฟิลด์สำหรับเก็บโทเค็นรีเซ็ต
+  resetPasswordExpires: { type: Date }, // ฟิลด์สำหรับเก็บวันหมดอายุของโทเค็น
   updated_at: { type: Date, default: Date.now },
 });
 
