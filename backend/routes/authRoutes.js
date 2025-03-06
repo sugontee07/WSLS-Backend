@@ -3,6 +3,7 @@ import { User } from '../model/User.js';
 import jwt from 'jsonwebtoken';
 import nodemailer from 'nodemailer';
 import dotenv from 'dotenv';
+
 dotenv.config();
 
 const router = express.Router();

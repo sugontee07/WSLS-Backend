@@ -1,4 +1,3 @@
-// routes/userRoutes.js
 import express from 'express';
 import { User } from '../model/User.js';
 import multer from 'multer';
@@ -106,7 +105,7 @@ router.get('/profile/me', protect, async (req, res) => {
   }
 });
 
-// API อัปเดตโปรไฟล์
+// API อัปเดตโปรไฟล์ของผู้ใช้ที่ล็อกอิน
 router.put('/profile/me', protect, upload.single('profilePicture'), async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
@@ -213,13 +212,121 @@ router.put('/profile/me', protect, upload.single('profilePicture'), async (req, 
   }
 });
 
-// API สำหรับลบผู้ใช้ (เฉพาะ Admin)
+// API อัปเดตโปรไฟล์ของผู้ใช้ตาม ID (เฉพาะ Admin)
+router.put('/profile/:userId', protect, isAdmin, upload.single('profilePicture'), async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const user = await User.findById(userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+
+    let updatedData = {};
+    const { firstName, lastName, department, email, phoneNumber, role } = req.body;
+
+    if (req.file) {
+      if (!req.file.mimetype.startsWith('image/')) {
+        return res.status(400).json({ status: 'error', message: 'Only image files are allowed' });
+      }
+
+      if (user.profilePicture) {
+        const oldImagePath = path.join(
+          process.cwd(),
+          user.profilePicture.replace(/^\/uploads\//, 'uploads/')
+        );
+        try {
+          await fs.unlink(oldImagePath);
+          console.log(`Deleted old profile picture: ${oldImagePath}`);
+        } catch (err) {
+          console.error(`Error deleting old profile picture: ${err.message}`);
+        }
+      }
+
+      updatedData.profilePicture = `/uploads/${req.file.filename}`;
+      console.log('New profile picture path:', updatedData.profilePicture);
+    }
+
+    if (firstName || lastName || department || email || phoneNumber || role || req.file) {
+      if (firstName && (firstName.length > 50 || !firstName.trim())) {
+        return res.status(400).json({ status: 'error', message: 'Invalid first name' });
+      }
+      if (lastName && (lastName.length > 50 || !lastName.trim())) {
+        return res.status(400).json({ status: 'error', message: 'Invalid last name' });
+      }
+      if (department && (department.length > 50 || !department.trim())) {
+        return res.status(400).json({ status: 'error', message: 'Invalid department' });
+      }
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid email format' });
+      }
+      if (phoneNumber && !/^\d{9,}$/.test(phoneNumber.trim())) {
+        return res.status(400).json({ status: 'error', message: 'Invalid phone number (at least 9 digits)' });
+      }
+      if (email && email !== user.email) {
+        const existingEmail = await User.findOne({ email });
+        if (existingEmail) {
+          return res.status(400).json({ status: 'error', message: 'Email already exists' });
+        }
+      }
+
+      updatedData = {
+        ...updatedData,
+        firstName: firstName || user.firstName,
+        lastName: lastName || user.lastName,
+        department: department || user.department,
+        email: email || user.email,
+        phoneNumber: phoneNumber || user.phoneNumber,
+        role: role || user.role,
+        profilePicture: updatedData.profilePicture || user.profilePicture,
+        updated_at: new Date()
+      };
+    } else {
+      return res.status(400).json({ status: 'error', message: 'No updates provided' });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      updatedData,
+      { new: true, runValidators: true, select: '-password' }
+    );
+
+    const profilePic = updatedUser.profilePicture;
+    const fullProfilePic = profilePic
+      ? profilePic.startsWith('http')
+        ? profilePic
+        : `http://172.18.43.37:3000${profilePic}`
+      : '';
+
+    const userResponse = {
+      id: updatedUser._id,
+      firstName: updatedUser.firstName,
+      lastName: updatedUser.lastName,
+      email: updatedUser.email,
+      employeeId: updatedUser.employeeId,
+      department: updatedUser.department,
+      phoneNumber: updatedUser.phoneNumber,
+      profilePicture: fullProfilePic,
+      role: updatedUser.role,
+      updated_at: updatedUser.updated_at
+    };
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Profile updated successfully',
+      data: userResponse
+    });
+  } catch (error) {
+    console.error('Update profile error:', error.stack);
+    res.status(500).json({ status: 'error', message: 'Server error' });
+  }
+});
+
+// API ลบผู้ใช้ (เฉพาะ Admin)
 router.delete('/users/:userId', protect, isAdmin, async (req, res) => {
   try {
     const userIdToDelete = req.params.userId;
     const adminId = req.user.id;
 
-    // ป้องกัน Admin ลบตัวเอง
     if (userIdToDelete === adminId) {
       return res.status(403).json({
         status: 'error',
@@ -232,7 +339,6 @@ router.delete('/users/:userId', protect, isAdmin, async (req, res) => {
       return res.status(404).json({ status: 'error', message: 'User not found' });
     }
 
-    // ลบรูปโปรไฟล์ถ้ามี
     if (user.profilePicture) {
       const imagePath = path.join(
         process.cwd(),
@@ -246,7 +352,6 @@ router.delete('/users/:userId', protect, isAdmin, async (req, res) => {
       }
     }
 
-    // ลบผู้ใช้จาก MongoDB
     await User.findByIdAndDelete(userIdToDelete);
 
     res.status(200).json({
