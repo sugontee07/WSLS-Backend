@@ -11,8 +11,8 @@ const cellSchema = new mongoose.Schema({
   capacity: { type: Number, default: 0, min: 0 }, // ความจุ (ต้องไม่ติดลบ)
   subCells: [
     {
-      id: { type: String, required: true },
-      capacity: { type: Number, default: 0, min: 0 },
+      id: { type: String, required: true, unique: true }, // ID เฉพาะของ subCell
+      capacity: { type: Number, default: 0, min: 0 }, // ความจุของ subCell
     },
   ], // รองรับ subCells
   status: { type: String, enum: ["enabled", "disabled"], default: "enabled" }, // สถานะ
@@ -25,8 +25,8 @@ const Cell = mongoose.model("Cell", cellSchema);
 const validateCellData = (req, res, next) => {
   const { cellId, row, col, capacity, subCells, status } = req.body;
 
-  if (!cellId || !row || !col) {
-    return res.status(400).json({ success: false, error: "Missing required fields" });
+  if (!cellId && !req.params.cellId) {
+    return res.status(400).json({ success: false, error: "Missing cellId" });
   }
   if (capacity !== undefined && capacity < 0) {
     return res.status(400).json({ success: false, error: "Capacity cannot be negative" });
@@ -37,7 +37,15 @@ const validateCellData = (req, res, next) => {
   if (subCells && !Array.isArray(subCells)) {
     return res.status(400).json({ success: false, error: "subCells must be an array" });
   }
-  req.validatedData = { cellId, row, col, capacity, subCells, status };
+  if (subCells) {
+    const invalidSubCells = subCells.some(
+      (sub) => !sub.id || sub.capacity === undefined || sub.capacity < 0
+    );
+    if (invalidSubCells) {
+      return res.status(400).json({ success: false, error: "Invalid subCells data" });
+    }
+  }
+  req.validatedData = { cellId: req.params.cellId || cellId, row, col, capacity, subCells, status };
   next();
 };
 
@@ -83,7 +91,33 @@ router.get("/cells", async (req, res) => {
   }
 });
 
-// 2. สร้างหรืออัปเดตข้อมูลเซลล์ (Add/Update Cell)
+// 2. ดึงข้อมูลสรุปสำหรับ Dashboard
+router.get("/cells/summary", async (req, res) => {
+  try {
+    // นับจำนวนเซลล์ทั้งหมด
+    const totalBoxes = await Cell.countDocuments();
+
+    // นับจำนวนเซลล์ที่ enabled
+    const activeBoxes = await Cell.countDocuments({ status: "enabled" });
+
+    // นับจำนวนเซลล์ที่ disabled
+    const disabledBoxes = await Cell.countDocuments({ status: "disabled" });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        totalBoxes,
+        activeBoxes,
+        disabledBoxes,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to fetch cell summary:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch cell summary" });
+  }
+});
+
+// 3. สร้างหรืออัปเดตข้อมูลเซลล์ (Add/Update Cell)
 router.post("/cells", validateCellData, async (req, res) => {
   try {
     const { cellId, row, col, capacity, subCells, status } = req.validatedData;
@@ -152,13 +186,52 @@ router.put("/cells/:cellId", validateCellData, async (req, res) => {
   }
 });
 
-// 3. เปลี่ยนสถานะเซลล์ (Update Cell Status)
-router.patch("/cells/:cellId", async (req, res) => {
-    try {
-      const { status } = req.body;
-      if (!status || !["enabled", "disabled"].includes(status)) {
-        return res.status(400).json({ success: false, error: "Invalid status value" });
+// 4. เพิ่ม subCells ให้กับเซลล์ที่มีอยู่
+router.post("/cells/:cellId/subCells", validateCellData, async (req, res) => {
+  try {
+    const { subCells } = req.validatedData;
+    const cell = await Cell.findOne({ cellId: req.params.cellId });
+
+    if (!cell) {
+      return res.status(404).json({ success: false, error: "Cell not found" });
+    }
+
+    const existingSubCellIds = new Set(cell.subCells.map((sub) => sub.id));
+    const newSubCells = subCells.filter((sub) => {
+      if (existingSubCellIds.has(sub.id)) {
+        return false;
       }
+      existingSubCellIds.add(sub.id);
+      return true;
+    });
+
+    if (newSubCells.length === 0) {
+      return res.status(400).json({ success: false, error: "All subCell IDs already exist" });
+    }
+
+    cell.subCells = [...cell.subCells, ...newSubCells];
+    await cell.save();
+
+    res.status(201).json({
+      success: true,
+      data: {
+        cellId: cell.cellId,
+        subCells: cell.subCells,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to add subCells:", error);
+    res.status(500).json({ success: false, error: "Failed to add subCells" });
+  }
+});
+
+// 5. เปลี่ยนสถานะเซลล์โดยตรงที่ /cells/:cellId
+router.patch("/cells/:cellId", async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status || !["enabled", "disabled"].includes(status)) {
+      return res.status(400).json({ success: false, error: "Invalid status value" });
+    }
 
     const updatedCell = await Cell.findOneAndUpdate(
       { cellId: req.params.cellId },
@@ -180,7 +253,7 @@ router.patch("/cells/:cellId", async (req, res) => {
   }
 });
 
-// 4. รีเซ็ต/ลบเซลล์ (Reset Cell)
+// 6. รีเซ็ต/ลบเซลล์ (Reset Cell)
 router.delete("/cells/:cellId", async (req, res) => {
   try {
     const deletedCell = await Cell.findOneAndDelete({ cellId: req.params.cellId });
@@ -199,7 +272,7 @@ router.delete("/cells/:cellId", async (req, res) => {
   }
 });
 
-// 5. เพิ่ม Column ใหม่ (Add Location)
+// 7. เพิ่ม Column ใหม่ (Add Location)
 router.post("/columns", async (req, res) => {
   try {
     const { col } = req.body;
@@ -207,13 +280,11 @@ router.post("/columns", async (req, res) => {
       return res.status(400).json({ success: false, error: "Column is required" });
     }
 
-    // ตรวจสอบว่า column นี้มีอยู่แล้วหรือไม่
     const existingCol = await Cell.findOne({ col });
     if (existingCol) {
       return res.status(400).json({ success: false, error: "Column already exists" });
     }
 
-    // สร้างเซลล์เริ่มต้นสำหรับ column ใหม่ (ถ้าต้องการ)
     res.status(201).json({
       success: true,
       data: { col, cells: [] },
