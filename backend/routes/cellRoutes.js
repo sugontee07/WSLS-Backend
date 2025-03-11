@@ -153,12 +153,12 @@ router.put("/cells/:cellId", validateCellData, async (req, res) => {
 });
 
 // 3. เปลี่ยนสถานะเซลล์ (Update Cell Status)
-router.patch("/cells/:cellId/status", async (req, res) => {
-  try {
-    const { status } = req.body;
-    if (!status || !["enabled", "disabled"].includes(status)) {
-      return res.status(400).json({ success: false, error: "Invalid status value" });
-    }
+router.patch("/cells/:cellId", async (req, res) => {
+    try {
+      const { status } = req.body;
+      if (!status || !["enabled", "disabled"].includes(status)) {
+        return res.status(400).json({ success: false, error: "Invalid status value" });
+      }
 
     const updatedCell = await Cell.findOneAndUpdate(
       { cellId: req.params.cellId },
