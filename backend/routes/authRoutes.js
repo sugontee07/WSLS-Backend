@@ -8,9 +8,9 @@ dotenv.config();
 
 const router = express.Router();
 
-// Log email credentials for debugging
-console.log('Email User:', process.env.EMAIL_USER);
-console.log('Email Password:', process.env.EMAIL_PASSWORD);
+// // Log email credentials for debugging
+// console.log('Email User:', process.env.EMAIL_USER);
+// console.log('Email Password:', process.env.EMAIL_PASSWORD);
 
 // Create Nodemailer transporter (with fallback if credentials are missing)
 let transporter;
