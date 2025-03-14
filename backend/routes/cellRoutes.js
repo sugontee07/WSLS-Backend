@@ -16,15 +16,53 @@ mongoose.connection.on("disconnected", () => {
   console.log("MongoDB disconnected");
 });
 
-// Schema สำหรับ Cell (ไม่มี subCells)
+// Schema สำหรับ Cell
 const cellSchema = new mongoose.Schema({
-  cellId: { type: String, required: true, unique: true }, // รหัสเซลล์ เช่น A-01
-  col: { type: String, required: true }, // แกน X (เช่น A, B, C)
-  row: { type: String, required: true }, // แกน Y (เช่น 01, 02, 03)
-  status: { type: Number, enum: [0, 1, 2, 3], default: 0 }, // สถานะ: 0=ไม่ใช้งาน, 1=เปิดใช้งาน, 2=ปิดใช้งาน, 3=รีเซ็ตเซลล์
+  cellId: { type: String, required: true, unique: true },
+  col: { type: String, required: true },
+  row: { type: String, required: true },
+  status: { type: Number, enum: [0, 1, 2, 3], default: 0 },
+  divisionType: { type: String, enum: [null, "single", "dual"], default: null },
+  subCellsA: {
+    status: { type: Number, enum: [0, 1, 2, 3], default: 0 },
+    products: { type: [mongoose.Schema.Types.ObjectId], ref: "Product", default: [] },
+    label: { type: String, default: function() { return this.cellId + "R1"; } },
+  },
+  subCellsB: {
+    status: { type: Number, enum: [0, 1, 2, 3], default: 0 },
+    products: { type: [mongoose.Schema.Types.ObjectId], ref: "Product", default: [] },
+    label: { type: String, default: function() { return this.cellId + "R2"; } },
+  },
 }, { timestamps: true });
 
+// ตรวจสอบและกำหนดค่าเริ่มต้นให้ subCells ก่อนบันทึก
+cellSchema.pre('save', function(next) {
+  if (!this.subCellsA || typeof this.subCellsA.status === 'undefined') {
+    this.subCellsA = { status: 0, products: [], label: this.cellId + "R1" };
+  }
+  if (!this.subCellsB || typeof this.subCellsB.status === 'undefined') {
+    this.subCellsB = { status: 0, products: [], label: this.cellId + "R2" };
+  }
+  this.subCellsA.status = Number(this.subCellsA.status);
+  this.subCellsB.status = Number(this.subCellsB.status);
+  next();
+});
+
 const Cell = mongoose.model("Cell", cellSchema);
+
+// Migration script เพื่ออัปเดตข้อมูลเก่า
+async function migrateOldCells() {
+  const cells = await Cell.find({ $or: [{ subCellsA: { $exists: false } }, { subCellsB: { $exists: false } }, { divisionType: { $exists: false } }] });
+  for (const cell of cells) {
+    cell.divisionType = cell.divisionType || null;
+    cell.subCellsA = { status: 0, products: [], label: cell.cellId + "R1" };
+    cell.subCellsB = { status: 0, products: [], label: cell.cellId + "R2" };
+    await cell.save();
+  }
+  console.log("Migration completed");
+}
+
+migrateOldCells().catch(console.error);
 
 // Schema สำหรับ Product
 const productSchema = new mongoose.Schema({
@@ -37,6 +75,7 @@ const productSchema = new mongoose.Schema({
   image: { type: String },
   location: {
     cellId: { type: String, required: true, ref: "Cell" },
+    subCell: { type: String, enum: ["A", "B"], default: null },
   },
   status: { type: Number, enum: [0, 1, 2, 3], default: 1 },
 }, { timestamps: true });
@@ -56,25 +95,6 @@ const validateCellData = (req, res, next) => {
   next();
 };
 
-// Middleware สำหรับตรวจสอบข้อมูล Product
-const validateProductData = (req, res, next) => {
-  const { productId, type, name, inDate, endDate, quantity, image, location, status } = req.body;
-  if (!productId || !type || !name || !inDate || !endDate || quantity === undefined) {
-    return res.status(400).json({ success: false, error: "Missing required product fields" });
-  }
-  if (quantity < 0) {
-    return res.status(400).json({ success: false, error: "Quantity cannot be negative" });
-  }
-  if (status !== undefined && ![0, 1, 2, 3].includes(status)) {
-    return res.status(400).json({ success: false, error: "Invalid status value, must be 0, 1, 2, or 3" });
-  }
-  if (!location || !location.cellId) {
-    return res.status(400).json({ success: false, error: "Missing location details: cellId is required" });
-  }
-  req.validatedData = { productId, type, name, inDate, endDate, quantity, image, location, status };
-  next();
-};
-
 // Middleware สำหรับตรวจสอบการอัปเดตสถานะ
 const validateStatusUpdate = (req, res, next) => {
   const { cellId, status } = req.body;
@@ -85,6 +105,19 @@ const validateStatusUpdate = (req, res, next) => {
     return res.status(400).json({ success: false, error: "Invalid status value, must be 0, 1, 2, or 3" });
   }
   req.validatedData = { cellId, status };
+  next();
+};
+
+// Middleware สำหรับตรวจสอบการแก้ไข subCells
+const validateEditSubCells = (req, res, next) => {
+  const { cellId, subCellChoice } = req.body;
+  if (!cellId) {
+    return res.status(400).json({ success: false, error: "Missing required field: cellId" });
+  }
+  if (!subCellChoice || !["R1", "R2", "both"].includes(subCellChoice)) {
+    return res.status(400).json({ success: false, error: "Invalid subCellChoice, must be 'R1', 'R2', or 'both'" });
+  }
+  req.validatedData = { cellId, subCellChoice };
   next();
 };
 
@@ -110,6 +143,9 @@ router.post("/create/cells", validateCellData, async (req, res) => {
         col: newCell.col,
         row: newCell.row,
         status: newCell.status,
+        divisionType: newCell.divisionType,
+        subCellsA: newCell.subCellsA,
+        subCellsB: newCell.subCellsB,
       },
     });
   } catch (error) {
@@ -118,17 +154,95 @@ router.post("/create/cells", validateCellData, async (req, res) => {
   }
 });
 
-// Route: อัปเดตสถานะของ Cell
-router.put("/update-status", validateStatusUpdate, async (req, res) => {
+// Route: แก้ไขเซลล์ให้มี subCells
+router.put("/edit-subcells", validateEditSubCells, async (req, res) => {
   try {
-    const { cellId, status } = req.validatedData;
+    const { cellId, subCellChoice } = req.validatedData;
     const cell = await Cell.findOne({ cellId });
     if (!cell) {
       return res.status(404).json({ success: false, error: "Cell not found" });
     }
-    console.log(req, res);
-    cell.status = status;
+
+    if (cell.divisionType !== null) {
+      return res.status(400).json({ success: false, error: "Cell is already divided" });
+    }
+
+    const productsInCell = await Product.find({ "location.cellId": cellId });
+    if (productsInCell.length > 0) {
+      return res.status(400).json({ success: false, error: "Cannot divide cell with existing products" });
+    }
+
+    cell.divisionType = "dual";
+    cell.status = 0;
+
+    if (subCellChoice === "both") {
+      cell.subCellsA.status = 1;
+      cell.subCellsB.status = 1;
+    } else {
+      cell.subCellsA.status = Number(subCellChoice === "R1" ? 1 : 0);
+      cell.subCellsB.status = Number(subCellChoice === "R2" ? 1 : 0);
+    }
+
     await cell.save();
+
+    res.status(200).json({
+      success: true,
+      data: {
+        cellId: cell.cellId,
+        col: cell.col,
+        row: cell.row,
+        divisionType: cell.divisionType,
+        status: cell.status,
+        subCellsA: cell.subCellsA,
+        subCellsB: cell.subCellsB,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to edit subcells:", error);
+    res.status(500).json({ success: false, error: "Failed to edit subcells", details: error.message });
+  }
+});
+
+// Route: อัปเดตสถานะของ Cell หรือ Subcell
+router.put("/update-status", validateStatusUpdate, async (req, res) => {
+  try {
+    const { cellId, status } = req.validatedData;
+
+    const isSubCell = cellId.includes("-A") || cellId.includes("-B");
+    let cell;
+
+    if (isSubCell) {
+      const mainCellId = cellId.split("-").slice(0, 2).join("-");
+      cell = await Cell.findOne({ cellId: mainCellId });
+      if (!cell) {
+        return res.status(404).json({ success: false, error: "Main cell not found" });
+      }
+
+      if (cell.divisionType !== "dual") {
+        return res.status(400).json({ success: false, error: "Cell is not divided into subcells" });
+      }
+
+      if (cellId.endsWith("-A")) {
+        cell.subCellsA.status = status;
+      } else if (cellId.endsWith("-B")) {
+        cell.subCellsB.status = status;
+      }
+    } else {
+      cell = await Cell.findOne({ cellId });
+      if (!cell) {
+        return res.status(404).json({ success: false, error: "Cell not found" });
+      }
+      if (cell.divisionType === "dual") {
+        return res.status(400).json({
+          success: false,
+          error: "Cannot update status of a dual-divided cell; update subcells instead",
+        });
+      }
+      cell.status = status;
+    }
+
+    await cell.save();
+
     res.status(200).json({
       success: true,
       data: {
@@ -136,6 +250,9 @@ router.put("/update-status", validateStatusUpdate, async (req, res) => {
         col: cell.col,
         row: cell.row,
         status: cell.status,
+        divisionType: cell.divisionType,
+        subCellsA: cell.subCellsA,
+        subCellsB: cell.subCellsB,
       },
     });
   } catch (error) {
@@ -170,18 +287,46 @@ router.get("/products", async (req, res) => {
   }
 });
 
-// Route: ดึงเซลล์ที่ว่าง (สำหรับ dropdown)
+// Route: ดึงเซลล์ที่ว่าง
 router.get("/cells/available", async (req, res) => {
   try {
-    const availableCells = await Cell.find({ status: 1 }); // เฉพาะเซลล์ที่เปิดใช้งาน (status: 1)
+    const availableCells = await Cell.find({ $or: [
+      { divisionType: null, status: 1 },
+      { divisionType: "single", status: 1 },
+      { "subCellsA.status": 1 },
+      { "subCellsB.status": 1 }
+    ] });
     const availableLocations = [];
     for (const cell of availableCells) {
-      const productsInCell = await Product.find({ "location.cellId": cell.cellId });
-      if (productsInCell.length === 0) {
-        availableLocations.push({
-          cellId: cell.cellId,
-          label: `${cell.col}${cell.row}`,
-        });
+      if (cell.divisionType === null || cell.divisionType === "single") {
+        const productsInCell = await Product.find({ "location.cellId": cell.cellId });
+        if (productsInCell.length === 0) {
+          availableLocations.push({
+            cellId: cell.cellId,
+            label: `${cell.col}${cell.row}`,
+          });
+        }
+      } else if (cell.divisionType === "dual") {
+        if (cell.subCellsA.status === 1) {
+          const productsInSubCellA = await Product.find({ "location.cellId": cell.cellId, "location.subCell": "A" });
+          if (productsInSubCellA.length === 0) {
+            availableLocations.push({
+              cellId: cell.cellId,
+              subCell: "A",
+              label: cell.subCellsA.label,
+            });
+          }
+        }
+        if (cell.subCellsB.status === 1) {
+          const productsInSubCellB = await Product.find({ "location.cellId": cell.cellId, "location.subCell": "B" });
+          if (productsInSubCellB.length === 0) {
+            availableLocations.push({
+              cellId: cell.cellId,
+              subCell: "B",
+              label: cell.subCellsB.label,
+            });
+          }
+        }
       }
     }
     res.status(200).json({ success: true, data: availableLocations });
@@ -194,19 +339,32 @@ router.get("/cells/available", async (req, res) => {
 // Route: ดึงข้อมูลสรุป
 router.get("/summary", async (req, res) => {
   try {
-    const totalBoxes = await Cell.countDocuments({ status: { $in: [1, 2, 3] } });
-    const activeBoxes = await Cell.countDocuments({ status: 1 }); // เปิดใช้งาน
-    const inactiveBoxes = await Cell.countDocuments({ status: 2 }); // ปิดใช้งาน
-    const disabledBoxes = await Cell.countDocuments({ status: 3 }); // รีเซ็ตเซลล์
-    const emptyBoxes = await Cell.countDocuments({ status: 0 }); // ไม่ใช้งาน
+    const singleOrNullActiveBoxes = await Cell.countDocuments({ divisionType: { $in: [null, "single"] }, status: 1 });
+    const singleOrNullInactiveBoxes = await Cell.countDocuments({ divisionType: { $in: [null, "single"] }, status: 2 });
+    const singleOrNullDisabledBoxes = await Cell.countDocuments({ divisionType: { $in: [null, "single"] }, status: 3 });
+
+    const activeSubCellsA = await Cell.countDocuments({ divisionType: "dual", "subCellsA.status": 1 });
+    const inactiveSubCellsA = await Cell.countDocuments({ divisionType: "dual", "subCellsA.status": 2 });
+    const disabledSubCellsA = await Cell.countDocuments({ divisionType: "dual", "subCellsA.status": 3 });
+
+    const activeSubCellsB = await Cell.countDocuments({ divisionType: "dual", "subCellsB.status": 1 });
+    const inactiveSubCellsB = await Cell.countDocuments({ divisionType: "dual", "subCellsB.status": 2 });
+    const disabledSubCellsB = await Cell.countDocuments({ divisionType: "dual", "subCellsB.status": 3 });
+
+    const totalBoxes = singleOrNullActiveBoxes + singleOrNullInactiveBoxes + singleOrNullDisabledBoxes +
+                       activeSubCellsA + inactiveSubCellsA + disabledSubCellsA +
+                       activeSubCellsB + inactiveSubCellsB + disabledSubCellsB;
+
     res.status(200).json({
       success: true,
       data: {
-        totalBoxes,
-        activeBoxes,
-        inactiveBoxes,
-        disabledBoxes,
-        emptyBoxes,
+        totalBoxes: totalBoxes,
+        activeBoxes: singleOrNullActiveBoxes + activeSubCellsA + activeSubCellsB,
+        inactiveBoxes: singleOrNullInactiveBoxes + inactiveSubCellsA + inactiveSubCellsB,
+        disabledBoxes: singleOrNullDisabledBoxes + disabledSubCellsA + disabledSubCellsB,
+        emptyBoxes: await Cell.countDocuments({ divisionType: { $in: [null, "single"] }, status: 0 }) +
+                    await Cell.countDocuments({ divisionType: "dual", "subCellsA.status": 0 }) +
+                    await Cell.countDocuments({ divisionType: "dual", "subCellsB.status": 0 }),
       },
     });
   } catch (error) {
