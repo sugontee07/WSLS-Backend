@@ -1,3 +1,4 @@
+//cellRoutes.js
 import express from "express";
 import mongoose from "mongoose";
 
@@ -287,54 +288,6 @@ router.get("/products", async (req, res) => {
   }
 });
 
-// Route: ดึงเซลล์ที่ว่าง
-router.get("/cells/available", async (req, res) => {
-  try {
-    const availableCells = await Cell.find({ $or: [
-      { divisionType: null, status: 1 },
-      { divisionType: "single", status: 1 },
-      { "subCellsA.status": 1 },
-      { "subCellsB.status": 1 }
-    ] });
-    const availableLocations = [];
-    for (const cell of availableCells) {
-      if (cell.divisionType === null || cell.divisionType === "single") {
-        const productsInCell = await Product.find({ "location.cellId": cell.cellId });
-        if (productsInCell.length === 0) {
-          availableLocations.push({
-            cellId: cell.cellId,
-            label: `${cell.col}${cell.row}`,
-          });
-        }
-      } else if (cell.divisionType === "dual") {
-        if (cell.subCellsA.status === 1) {
-          const productsInSubCellA = await Product.find({ "location.cellId": cell.cellId, "location.subCell": "A" });
-          if (productsInSubCellA.length === 0) {
-            availableLocations.push({
-              cellId: cell.cellId,
-              subCell: "A",
-              label: cell.subCellsA.label,
-            });
-          }
-        }
-        if (cell.subCellsB.status === 1) {
-          const productsInSubCellB = await Product.find({ "location.cellId": cell.cellId, "location.subCell": "B" });
-          if (productsInSubCellB.length === 0) {
-            availableLocations.push({
-              cellId: cell.cellId,
-              subCell: "B",
-              label: cell.subCellsB.label,
-            });
-          }
-        }
-      }
-    }
-    res.status(200).json({ success: true, data: availableLocations });
-  } catch (error) {
-    console.error("Failed to fetch available cells:", error);
-    res.status(500).json({ success: false, error: "Failed to fetch available cells" });
-  }
-});
 
 // Route: ดึงข้อมูลสรุป
 router.get("/summary", async (req, res) => {

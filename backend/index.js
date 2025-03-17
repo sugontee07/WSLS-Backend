@@ -1,3 +1,4 @@
+//index.js
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -6,7 +7,7 @@ import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import roleRoutes from "./routes/roleRoutes.js";
 import cellRoutes from "./routes/cellRoutes.js";
-import billRoutes from "./routes/billRoutes.js"; // นำเข้า billRoutes
+import billRoutes from "./routes/billRoutes.js"; 
 import path from "path";
 import fs from "fs";
 
@@ -56,7 +57,7 @@ app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/role", roleRoutes);
 app.use("/api/cell", cellRoutes);
-app.use("/api/bill", billRoutes); // เพิ่มเส้นทางสำหรับบิล
+app.use("/api/bill", billRoutes); 
 
 app.get("/api", (req, res) => {
   res.json({ message: "Hello, API Connected!" });
