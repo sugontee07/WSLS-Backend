@@ -1,20 +1,11 @@
+//cellRoutes.js
 import express from "express";
 import mongoose from "mongoose";
+import dotenv from 'dotenv';  
+
+dotenv.config();
 
 const router = express.Router();
-
-// ตรวจสอบการเชื่อมต่อ MongoDB
-mongoose.connection.on("connected", () => {
-  console.log("MongoDB connected successfully");
-});
-
-mongoose.connection.on("error", (err) => {
-  console.error("MongoDB connection error:", err);
-});
-
-mongoose.connection.on("disconnected", () => {
-  console.log("MongoDB disconnected");
-});
 
 // Schema สำหรับ Cell
 const cellSchema = new mongoose.Schema({
@@ -73,28 +64,9 @@ async function migrateOldCells() {
 
     await cell.save();
   }
-  console.log("Migration for status and subCells update completed");
 }
 
 migrateOldCells().catch(console.error);
-
-// Schema สำหรับ Product
-const productSchema = new mongoose.Schema({
-  productId: { type: String, required: true },
-  type: { type: String, required: true },
-  name: { type: String, required: true },
-  inDate: { type: String, required: true },
-  endDate: { type: String, required: true },
-  quantity: { type: Number, required: true, min: 0 },
-  image: { type: String },
-  location: {
-    cellId: { type: mongoose.Schema.Types.ObjectId, required: true, ref: "Cell" },
-    subCell: { type: String, enum: ["A", "B"], default: null },
-  },
-  status: { type: Number, enum: [0, 1, 2, 3], default: 2 },
-}, { timestamps: true });
-
-const Product = mongoose.model("Product", productSchema);
 
 // Middleware สำหรับตรวจสอบข้อมูล Cell
 const validateCellData = (req, res, next) => {
@@ -135,75 +107,6 @@ const validateEditSubCells = (req, res, next) => {
   next();
 };
 
-// Middleware สำหรับตรวจสอบข้อมูล Product และ Cell
-const validateAddProduct = async (req, res, next) => {
-  const { productId, type, name, inDate, endDate, quantity, image, location } = req.body;
-
-  if (!productId || !type || !name || !inDate || !endDate || !quantity || !location || !location.cellId) {
-    return res.status(400).json({ success: false, error: "Missing required fields" });
-  }
-
-  if (!Number.isInteger(quantity) || quantity <= 0) {
-    return res.status(400).json({ success: false, error: "Quantity must be a positive integer" });
-  }
-
-  // ตรวจสอบและแปลงรูปแบบวันที่
-  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-  if (!dateRegex.test(inDate) || !dateRegex.test(endDate)) {
-    return res.status(400).json({
-      success: false,
-      error: "inDate and endDate must be in YYYY-MM-DD format (e.g., 2025-03-13)",
-    });
-  }
-
-  // ตรวจสอบว่าเป็นวันที่ที่ถูกต้อง
-  const inDateObj = new Date(inDate);
-  const endDateObj = new Date(endDate);
-  if (isNaN(inDateObj.getTime()) || isNaN(endDateObj.getTime())) {
-    return res.status(400).json({
-      success: false,
-      error: "inDate or endDate is not a valid date",
-    });
-  }
-
-  const cell = await Cell.findOne({ cellId: location.cellId });
-  if (!cell) {
-    return res.status(404).json({ success: false, error: "Cell not found" });
-  }
-
-  if (cell.divisionType === "dual") {
-    if (!location.subCell || !["A", "B"].includes(location.subCell)) {
-      return res.status(400).json({
-        success: false,
-        error: "subCell must be specified as 'A' or 'B' for a dual-divided cell",
-      });
-    }
-    const subCellStatus = location.subCell === "A" ? cell.subCellsA.status : cell.subCellsB.status;
-    if (subCellStatus !== 1) {
-      return res.status(400).json({
-        success: false,
-        error: `SubCell ${location.subCell} is not available (status: ${subCellStatus})`,
-      });
-    }
-  } else {
-    if (location.subCell) {
-      return res.status(400).json({
-        success: false,
-        error: "Cannot specify subCell for a non-dual cell",
-      });
-    }
-    if (cell.status !== 1) {
-      return res.status(400).json({
-        success: false,
-        error: `Cell is not available (status: ${cell.status})`,
-      });
-    }
-  }
-
-  req.validatedData = { productId, type, name, inDate, endDate, quantity, image, location, cell, cellObjectId: cell._id };
-  next();
-};
-
 // Route: สร้าง Cell
 router.post("/create/cells", validateCellData, async (req, res) => {
   try {
@@ -237,92 +140,6 @@ router.post("/create/cells", validateCellData, async (req, res) => {
   }
 });
 
-// Route: เพิ่ม Product และเลือก Cell
-router.post("/add-product", validateAddProduct, async (req, res) => {
-  try {
-    const { productId, type, name, inDate, endDate, quantity, image, location, cell, cellObjectId } = req.validatedData;
-
-    // ตรวจสอบว่ามี Product เดิมที่มี productId เดียวกันในตำแหน่งเดียวกันหรือไม่
-    const existingProduct = await Product.findOne({ productId, "location.cellId": cellObjectId, "location.subCell": location.subCell || null });
-    if (existingProduct) {
-      // อัปเดต quantity ของ Product เดิม
-      existingProduct.quantity += quantity;
-      await existingProduct.save();
-
-      await existingProduct.populate({
-        path: "location.cellId",
-        select: "cellId",
-      });
-
-      return res.status(200).json({
-        success: true,
-        data: {
-          productId: existingProduct.productId,
-          type: existingProduct.type,
-          name: existingProduct.name,
-          quantity: existingProduct.quantity,
-          location: {
-            cellId: existingProduct.location.cellId ? existingProduct.location.cellId.cellId : null,
-            subCell: existingProduct.location.subCell || null,
-          },
-        },
-      });
-    }
-
-    // สร้าง Product ใหม่ถ้าไม่มี
-    const newProduct = new Product({
-      productId,
-      type,
-      name,
-      inDate,
-      endDate,
-      quantity,
-      image,
-      location: {
-        cellId: cellObjectId,
-        subCell: location.subCell || null,
-      },
-      status: 2,
-    });
-
-    // เพิ่ม Product ใน subCell หรือ Cell หลัก
-    if (cell.divisionType === "dual") {
-      if (location.subCell === "A") {
-        cell.subCellsA.products.push(newProduct._id);
-      } else if (location.subCell === "B") {
-        cell.subCellsB.products.push(newProduct._id);
-      }
-    } else {
-      // ไม่ต้องทำอะไรเพิ่มสำหรับ non-dual cell เพราะไม่มี subCell
-    }
-
-    await newProduct.save();
-    await cell.save();
-
-    await newProduct.populate({
-      path: "location.cellId",
-      select: "cellId",
-    });
-
-    res.status(201).json({
-      success: true,
-      data: {
-        productId: newProduct.productId,
-        type: newProduct.type,
-        name: newProduct.name,
-        quantity: newProduct.quantity,
-        location: {
-          cellId: newProduct.location.cellId ? newProduct.location.cellId.cellId : null,
-          subCell: newProduct.location.subCell || null,
-        },
-      },
-    });
-  } catch (error) {
-    console.error("Failed to add product:", error);
-    res.status(500).json({ success: false, error: "Failed to add product", details: error.message });
-  }
-});
-
 // Route: แก้ไขเซลล์ให้มี subCells
 router.put("/edit-subcells", validateEditSubCells, async (req, res) => {
   try {
@@ -336,6 +153,7 @@ router.put("/edit-subcells", validateEditSubCells, async (req, res) => {
       return res.status(400).json({ success: false, error: "Cell is already divided" });
     }
 
+    const Product = mongoose.model("Product"); // อ้างอิง Product model จาก mongoose
     const productsInCell = await Product.find({ "location.cellId": cell._id });
     if (productsInCell.length > 0) {
       return res.status(400).json({ success: false, error: "Cannot divide cell with existing products" });
@@ -379,6 +197,8 @@ router.put("/update-status", validateStatusUpdate, async (req, res) => {
 
     const isSubCell = cellId.includes("-A") || cellId.includes("-B");
     let cell;
+
+    const Product = mongoose.model("Product"); // อ้างอิง Product model จาก mongoose
 
     if (isSubCell) {
       const mainCellId = cellId.split("-").slice(0, 2).join("-");
@@ -481,33 +301,7 @@ router.get("/cellsAll", async (req, res) => {
   }
 });
 
-// Route: ดึงข้อมูล Products ทั้งหมด
-router.get("/products", async (req, res) => {
-  try {
-    const products = await Product.find().populate({
-      path: "location.cellId",
-      select: "cellId",
-    });
-
-    const formattedProducts = products.map(product => {
-      const location = {
-        cellId: product.location.cellId ? product.location.cellId.cellId : null,
-        subCell: product.location.subCell || null,
-      };
-      return {
-        ...product._doc,
-        location,
-      };
-    });
-
-    res.status(200).json({ success: true, data: formattedProducts });
-  } catch (error) {
-    console.error("Failed to fetch products:", error);
-    res.status(500).json({ success: false, error: "Failed to fetch products" });
-  }
-});
-
-// Route: ดึงข้อมูลสรุป
+/// Route: ดึงข้อมูลสรุป
 router.get("/summary", async (req, res) => {
   try {
     const singleOrNullActiveBoxes = await Cell.countDocuments({ divisionType: { $in: [null, "single"] }, status: 1 });
@@ -533,6 +327,17 @@ router.get("/summary", async (req, res) => {
     // คำนวณ emptyBoxes (เดิมคือ nullBoxes) เป็นเซลล์ที่มี status: 0
     const emptyBoxes = singleOrNullNullBoxes + nullSubCellsA + nullSubCellsB;
 
+    // หาเซลล์ที่มี updatedAt ล่าสุด
+    const latestUpdate = await Cell.findOne().sort({ updatedAt: -1 }).lean();
+    const lastUpdateDate = latestUpdate ? latestUpdate.updatedAt : new Date();
+
+    // แปลงวันที่เป็นรูปแบบ DD/MM/YY (ตามภาพ)
+    const formattedLastUpdate = lastUpdateDate.toLocaleDateString('th-TH', {
+      day: '2-digit',
+      month: '2-digit',
+      year: '2-digit'
+    });
+
     res.status(200).json({
       success: true,
       data: {
@@ -540,7 +345,8 @@ router.get("/summary", async (req, res) => {
         activeBoxes: singleOrNullActiveBoxes + activeSubCellsA + activeSubCellsB,
         inactiveBoxes: singleOrNullInactiveBoxes + inactiveSubCellsA + inactiveSubCellsB,
         disabledBoxes: singleOrNullDisabledBoxes + disabledSubCellsA + disabledSubCellsB,
-        emptyBoxes: emptyBoxes // คงไว้แค่ emptyBoxes (status: 0)
+        emptyBoxes: emptyBoxes,
+        lastUpdate: formattedLastUpdate // ใช้ lastUpdate แทน Lastupdate
       },
     });
   } catch (error) {

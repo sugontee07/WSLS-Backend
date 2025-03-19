@@ -1,4 +1,3 @@
-//index.js
 import express from "express";
 import mongoose from "mongoose";
 import cors from "cors";
@@ -7,16 +6,28 @@ import authRoutes from "./routes/authRoutes.js";
 import userRoutes from "./routes/userRoutes.js";
 import roleRoutes from "./routes/roleRoutes.js";
 import cellRoutes from "./routes/cellRoutes.js";
-import billRoutes from "./routes/billRoutes.js"; 
+import productRoutes from "./routes/productRoutes.js";
+import billRoutes from "./routes/billRoutes.js";
 import path from "path";
 import fs from "fs";
-
-dotenv.config();
 
 // เพิ่มจำนวน listeners สูงสุดเพื่อป้องกัน memory leak (ถ้าจำเป็น)
 import { EventEmitter } from "events";
 EventEmitter.defaultMaxListeners = 15;
 
+// โหลด environment variables
+dotenv.config();
+
+// ตรวจสอบ environment variables ที่จำเป็น (ลบ PORT ออก)
+const requiredEnvVars = ["MONGO_URI", "MONGO_USER", "MONGO_PASSWORD"];
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    console.error(`Error: Environment variable ${envVar} is not set.`);
+    process.exit(1);
+  }
+}
+
+// ใช้ค่าเริ่มต้น 3000 หาก PORT ไม่ได้กำหนด
 const port = process.env.PORT || 3000;
 const app = express();
 
@@ -30,6 +41,7 @@ if (!fs.existsSync(uploadDir)) {
 // ให้บริการไฟล์ static จากโฟลเดอร์ uploads
 app.use("/uploads", express.static(path.join(path.resolve(), "uploads")));
 
+// Middleware
 app.use(express.json());
 app.use(cors());
 
@@ -45,28 +57,48 @@ async function connectDB() {
     console.log("Connected to MongoDB successfully");
   } catch (err) {
     console.error("MongoDB connection error:", err.message);
-    // รีทรีการเชื่อมต่อหลังจาก 5 วินาทีหากล้มเหลว
     setTimeout(connectDB, 5000);
   }
 }
 
-connectDB(); // เรียกฟังก์ชันเชื่อมต่อ MongoDB
+connectDB();
+
+// เพิ่ม event listener สำหรับการจัดการสถานะการเชื่อมต่อ MongoDB
+mongoose.connection.on("connected", () => {
+  console.log("MongoDB connected successfully");
+});
+
+mongoose.connection.on("error", (err) => {
+  console.error("MongoDB connection error:", err);
+});
+
+mongoose.connection.on("disconnected", () => {
+  console.log("MongoDB disconnected, attempting to reconnect...");
+  connectDB();
+});
 
 // ลงทะเบียนเส้นทาง (Routes)
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/role", roleRoutes);
 app.use("/api/cell", cellRoutes);
-app.use("/api/bill", billRoutes); 
+app.use("/api/product", productRoutes);
+app.use("/api/bill", billRoutes);
 
 app.get("/api", (req, res) => {
   res.json({ message: "Hello, API Connected!" });
 });
 
-// Handler สำหรับข้อผิดพลาดทั่วไป
+// Middleware สำหรับจัดการข้อผิดพลาดทั่วไป
 app.use((err, req, res, next) => {
   console.error("Server error:", err.stack);
-  res.status(500).json({ status: "error", message: "Internal server error" });
+  const statusCode = err.status || 500;
+  const errorResponse = {
+    status: "error",
+    message: err.message || "Internal server error",
+    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
+  };
+  res.status(statusCode).json(errorResponse);
 });
 
 // เริ่มเซิร์ฟเวอร์
@@ -77,12 +109,13 @@ const server = app.listen(port, () => {
 server.on("error", (error) => {
   if (error.code === "EADDRINUSE") {
     console.error(`Port ${port} is already in use, trying next port...`);
-    const newPort = port + 1;
+    const newPort = parseInt(port) + 1;
     server.listen(newPort, () => {
       console.log(`Server running on port ${newPort}`);
     });
   } else {
     console.error("Server error:", error);
+    process.exit(1);
   }
 });
 
