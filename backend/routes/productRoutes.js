@@ -1,167 +1,117 @@
-//productRoutes.js 
-import express from "express";
-import mongoose from "mongoose";
-import dotenv from 'dotenv';
-
-dotenv.config();
+import express from 'express';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs/promises';
+import Product from '../model/Product.js'; // แก้ path ให้ถูกต้อง
+import { protect, isAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
 
-
-// Schema สำหรับ Product
-const productSchema = new mongoose.Schema({
-  productId: { type: String, required: true },
-  type: { type: String, required: true },
-  name: { type: String, required: true },
-  inDate: { type: String, required: true },
-  endDate: { type: String, required: true },
-  quantity: { type: Number, required: true, min: 0 },
-  image: { type: String },
-  location: {
-    cellId: { type: mongoose.Schema.Types.ObjectId, required: true, ref: "Cell" },
-    subCell: { type: String, enum: ["A", "B"], default: null },
+// ตั้งค่า Multer สำหรับการอัปโหลดรูปภาพ
+const storage = multer.diskStorage({
+  destination: async (req, file, cb) => {
+    const uploadPath = path.join('uploads', 'product');
+    try {
+      await fs.mkdir(uploadPath, { recursive: true });
+      cb(null, uploadPath);
+    } catch (err) {
+      cb(err);
+    }
   },
-  status: { type: Number, enum: [0, 1, 2, 3], default: 2 },
-}, { timestamps: true });
+  filename: (req, file, cb) => {
+    const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
+    const ext = path.extname(file.originalname);
+    cb(null, `product_${uniqueSuffix}${ext}`);
+  },
+});
 
-const Product = mongoose.model("Product", productSchema);
-
-// Middleware สำหรับตรวจสอบข้อมูล Product และ Cell
-const validateAddProduct = async (req, res, next) => {
-  const { productId, type, name, inDate, endDate, quantity, image, location } = req.body;
-
-  if (!productId || !type || !name || !inDate || !endDate || !quantity || !location || !location.cellId) {
-    return res.status(400).json({ success: false, error: "Missing required fields" });
-  }
-
-  if (!Number.isInteger(quantity) || quantity <= 0) {
-    return res.status(400).json({ success: false, error: "Quantity must be a positive integer" });
-  }
-
-  // ตรวจสอบและแปลงรูปแบบวันที่
-  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
-  if (!dateRegex.test(inDate) || !dateRegex.test(endDate)) {
-    return res.status(400).json({
-      success: false,
-      error: "inDate and endDate must be in YYYY-MM-DD format (e.g., 2025-03-13)",
-    });
-  }
-
-  // ตรวจสอบว่าเป็นวันที่ที่ถูกต้อง
-  const inDateObj = new Date(inDate);
-  const endDateObj = new Date(endDate);
-  if (isNaN(inDateObj.getTime()) || isNaN(endDateObj.getTime())) {
-    return res.status(400).json({
-      success: false,
-      error: "inDate or endDate is not a valid date",
-    });
-  }
-
-  const Cell = mongoose.model("Cell"); // อ้างอิง Cell model จาก mongoose
-  const cell = await Cell.findOne({ cellId: location.cellId });
-  if (!cell) {
-    return res.status(404).json({ success: false, error: "Cell not found" });
-  }
-
-  if (cell.divisionType === "dual") {
-    if (!location.subCell || !["A", "B"].includes(location.subCell)) {
-      return res.status(400).json({
-        success: false,
-        error: "subCell must be specified as 'A' or 'B' for a dual-divided cell",
-      });
+const upload = multer({
+  storage,
+  fileFilter: (req, file, cb) => {
+    const filetypes = /jpeg|jpg|png/;
+    const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+    const mimetype = filetypes.test(file.mimetype);
+    if (extname && mimetype) {
+      cb(null, true);
+    } else {
+      cb(new Error('Images only! (jpeg, jpg, png)'));
     }
-    const subCellStatus = location.subCell === "A" ? cell.subCellsA.status : cell.subCellsB.status;
-    if (subCellStatus !== 1) {
-      return res.status(400).json({
-        success: false,
-        error: `SubCell ${location.subCell} is not available (status: ${subCellStatus})`,
-      });
-    }
-  } else {
-    if (location.subCell) {
-      return res.status(400).json({
-        success: false,
-        error: "Cannot specify subCell for a non-dual cell",
-      });
-    }
-    if (cell.status !== 1) {
-      return res.status(400).json({
-        success: false,
-        error: `Cell is not available (status: ${cell.status})`,
-      });
-    }
+  },
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+});
+
+// Middleware สำหรับจัดการการอัปโหลดภาพ
+const handleImageUpload = (req, res, next) => {
+  if (!req.headers['content-type']?.includes('multipart/form-data')) {
+    console.log('Not multipart/form-data, skipping image upload');
+    req.file = undefined;
+    return next();
   }
 
-  req.validatedData = { productId, type, name, inDate, endDate, quantity, image, location, cell, cellObjectId: cell._id };
+  upload.single('image')(req, res, (err) => {
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_UNEXPECTED_FILE') {
+      console.log('MulterError: Unexpected field');
+      req.file = undefined;
+      return next();
+    }
+    if (err instanceof multer.MulterError && err.code === 'LIMIT_FILE_SIZE') {
+      console.log('MulterError: File too large');
+      return res.status(400).json({ success: false, error: 'File size exceeds 5MB limit' });
+    }
+    if (err) {
+      console.log('MulterError:', err.message);
+      return res.status(400).json({ success: false, error: err.message });
+    }
+    console.log('File uploaded:', req.file);
+    next();
+  });
+};
+
+// Middleware สำหรับตรวจสอบข้อมูล Product
+const validateProduct = (req, res, next) => {
+  const { productId, type, name } = req.body;
+
+  if (!productId || !type || !name) {
+    return res.status(400).json({ success: false, error: "Missing required fields (productId, type, name)" });
+  }
+
+  if (typeof productId !== 'string' || productId.trim() === '') {
+    return res.status(400).json({ success: false, error: "productId must be a non-empty string" });
+  }
+
+  if (typeof type !== 'string' || type.trim() === '') {
+    return res.status(400).json({ success: false, error: "type must be a non-empty string" });
+  }
+
+  if (typeof name !== 'string' || name.trim() === '') {
+    return res.status(400).json({ success: false, error: "name must be a non-empty string" });
+  }
+
   next();
 };
 
-// Route: เพิ่ม Product และเลือก Cell
-router.post("/add-product", validateAddProduct, async (req, res) => {
+// Route: สร้าง Product ใหม่
+router.post('/create', protect, isAdmin, handleImageUpload, validateProduct, async (req, res) => {
   try {
-    const { productId, type, name, inDate, endDate, quantity, image, location, cell, cellObjectId } = req.validatedData;
+    const { productId, type, name } = req.body;
 
-    // ตรวจสอบว่ามี Product เดิมที่มี productId เดียวกันในตำแหน่งเดียวกันหรือไม่
-    const existingProduct = await Product.findOne({ productId, "location.cellId": cellObjectId, "location.subCell": location.subCell || null });
+    console.log('Creating product with data:', { productId, type, name, file: req.file });
+
+    // ตรวจสอบว่า productId ซ้ำหรือไม่
+    const existingProduct = await Product.findOne({ productId });
     if (existingProduct) {
-      // อัปเดต quantity ของ Product เดิม
-      existingProduct.quantity += quantity;
-      await existingProduct.save();
-
-      await existingProduct.populate({
-        path: "location.cellId",
-        select: "cellId",
-      });
-
-      return res.status(200).json({
-        success: true,
-        data: {
-          productId: existingProduct.productId,
-          type: existingProduct.type,
-          name: existingProduct.name,
-          quantity: existingProduct.quantity,
-          location: {
-            cellId: existingProduct.location.cellId ? existingProduct.location.cellId.cellId : null,
-            subCell: existingProduct.location.subCell || null,
-          },
-        },
-      });
+      return res.status(400).json({ success: false, error: "Product with this productId already exists" });
     }
 
-    // สร้าง Product ใหม่ถ้าไม่มี
+    // สร้าง Product ใหม่
     const newProduct = new Product({
       productId,
       type,
       name,
-      inDate,
-      endDate,
-      quantity,
-      image,
-      location: {
-        cellId: cellObjectId,
-        subCell: location.subCell || null,
-      },
-      status: 2,
+      image: req.file ? `/uploads/product/${req.file.filename}` : null,
     });
-
-    // เพิ่ม Product ใน subCell หรือ Cell หลัก
-    if (cell.divisionType === "dual") {
-      if (location.subCell === "A") {
-        cell.subCellsA.products.push(newProduct._id);
-      } else if (location.subCell === "B") {
-        cell.subCellsB.products.push(newProduct._id);
-      }
-    } else {
-      // ไม่ต้องทำอะไรเพิ่มสำหรับ non-dual cell เพราะไม่มี subCell
-    }
 
     await newProduct.save();
-    await cell.save();
-
-    await newProduct.populate({
-      path: "location.cellId",
-      select: "cellId",
-    });
 
     res.status(201).json({
       success: true,
@@ -169,42 +119,12 @@ router.post("/add-product", validateAddProduct, async (req, res) => {
         productId: newProduct.productId,
         type: newProduct.type,
         name: newProduct.name,
-        quantity: newProduct.quantity,
-        location: {
-          cellId: newProduct.location.cellId ? newProduct.location.cellId.cellId : null,
-          subCell: newProduct.location.subCell || null,
-        },
+        image: newProduct.image ? `${process.env.BASE_URL}${newProduct.image}` : null,
       },
     });
   } catch (error) {
-    console.error("Failed to add product:", error);
-    res.status(500).json({ success: false, error: "Failed to add product", details: error.message });
-  }
-});
-
-// Route: ดึงข้อมูล Products ทั้งหมด
-router.get("/products", async (req, res) => {
-  try {
-    const products = await Product.find().populate({
-      path: "location.cellId",
-      select: "cellId",
-    });
-
-    const formattedProducts = products.map(product => {
-      const location = {
-        cellId: product.location.cellId ? product.location.cellId.cellId : null,
-        subCell: product.location.subCell || null,
-      };
-      return {
-        ...product._doc,
-        location,
-      };
-    });
-
-    res.status(200).json({ success: true, data: formattedProducts });
-  } catch (error) {
-    console.error("Failed to fetch products:", error);
-    res.status(500).json({ success: false, error: "Failed to fetch products" });
+    console.error('Failed to create product:', error);
+    res.status(500).json({ success: false, error: 'Failed to create product', details: error.message });
   }
 });
 

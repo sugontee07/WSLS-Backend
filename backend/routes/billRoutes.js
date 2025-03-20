@@ -1,153 +1,237 @@
-//billRoutes.js 
 import express from "express";
 import mongoose from "mongoose";
+import Bill from "../model/Bill.js";
+import Product from "../model/Product.js";
+import { protect, isAdmin } from "../middleware/auth.js";
 
 const router = express.Router();
 
-// กำหนด Schema
-const billSchema = new mongoose.Schema({
-  billNumber: { type: String, required: true, unique: true }, // บังคับไม่ให้ซ้ำ
-  items: [{
-    product: {
-      productId: { type: String, required: true },
-      type: { type: String, required: true },
-      name: { type: String, required: true },
-      inDate: { type: String, default: () => new Date().toISOString().split("T")[0] },
-      endDate: { type: String, required: true },
-      quantity: { type: Number, required: true },
-      image: { type: String, required: true }
+// Middleware สำหรับตรวจสอบข้อมูล Bill
+const validateBill = async (req, res, next) => {
+  // ตรวจสอบว่า req.body มีอยู่
+  if (!req.body) {
+    return res.status(400).json({ success: false, error: "Request body is missing" });
+  }
+
+  const { items, endDate } = req.body;
+
+  if (!items || !Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ success: false, error: "Items must be a non-empty array" });
+  }
+
+  if (!endDate) {
+    return res.status(400).json({
+      success: false,
+      error: "endDate is required",
+    });
+  }
+
+  // ตรวจสอบรูปแบบวันที่ของ endDate
+  const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+  if (!dateRegex.test(endDate)) {
+    return res.status(400).json({
+      success: false,
+      error: "endDate must be in format YYYY-MM-DD",
+    });
+  }
+
+  // ตรวจสอบว่า endDate เป็นวันที่ที่ถูกต้อง
+  const endDateObj = new Date(endDate);
+  if (isNaN(endDateObj.getTime())) {
+    return res.status(400).json({
+      success: false,
+      error: "endDate is not a valid date",
+    });
+  }
+
+  for (const item of items) {
+    // ตรวจสอบว่าแต่ละ item มี productId และ quantity
+    if (!item.productId || !item.quantity) {
+      return res.status(400).json({ success: false, error: "Each item must have productId and quantity" });
     }
-  }]
+
+    // ตรวจสอบว่า quantity เป็นตัวเลขและมากกว่า 0
+    if (typeof item.quantity !== "number" || item.quantity < 1) {
+      return res.status(400).json({ success: false, error: "Quantity must be a number greater than 0" });
+    }
+
+    // ตรวจสอบว่า product มีอยู่ในตาราง Products โดยใช้ productId
+    const productExists = await Product.findOne({ productId: item.productId });
+    if (!productExists) {
+      return res.status(404).json({ success: false, error: `Product not found with productId: ${item.productId}` });
+    }
+  }
+
+  next();
+};
+
+// Route: สร้างบิลใหม่
+router.post("/create", validateBill, async (req, res) => {
+  try {
+    const { items, endDate } = req.body;
+
+    // ตรวจสอบข้อมูล items และดึงข้อมูลจาก Product
+    const updatedItems = [];
+    for (const item of items) {
+      // ดึงข้อมูลสินค้าจาก Product collection โดยใช้ productId
+      const product = await Product.findOne({ productId: item.productId });
+      if (!product) {
+        return res.status(404).json({
+          success: false,
+          error: `Product with ID ${item.productId} not found`,
+        });
+      }
+
+      updatedItems.push({
+        product: {
+          productId: item.productId,
+          name: product.name,
+          image: product.image || "",
+        },
+        quantity: item.quantity,
+      });
+    }
+
+    const newBill = new Bill({
+      items: updatedItems,
+      endDate,
+    });
+
+    await newBill.save();
+
+    res.status(201).json({
+      success: true,
+      data: newBill,
+    });
+  } catch (error) {
+    console.error("Failed to create bill:", error);
+    res.status(500).json({ success: false, error: "Failed to create bill", details: error.message });
+  }
 });
 
-const cellSchema = new mongoose.Schema({
-  cellId: { type: String, required: true, unique: true }, // เช่น "A1", "B2"
-  row: { type: Number, required: true },
-  col: { type: String, required: true },
-  status: { type: String, enum: ["ว่าง", "ใช้งาน", "ไม่มีข้อมูล"], default: "ว่าง" },
-  products: [Object] // ข้อมูลสินค้าในเซลล์ (ถ้ามี)
-});
-
-// กำหนด Model
-const Bill = mongoose.models.Bill || mongoose.model("Bill", billSchema);
-const Cell = mongoose.models.Cell || mongoose.model("Cell", cellSchema);
-
-// 1. Route สำหรับดึงข้อมูลบิลตาม billNumber
-router.get("/bills/:billNumber", async (req, res) => {
+// Route: ดึงข้อมูลบิลตาม billNumber
+router.get("/allBills/:billNumber", protect, async (req, res) => {
   try {
     const billNumber = req.params.billNumber;
 
-    // ดึงข้อมูลบิล
-    const bill = await Bill.findOne({ billNumber: billNumber });
-    if (!bill) {
-      return res.status(404).json({ message: "ไม่พบข้อมูลบิล" });
-    }
-
-    // คำนวณ inDate จาก items
-    const inDate = bill.items.length > 0 ? bill.items[0].product.inDate : new Date().toISOString().split("T")[0];
-
-    // นับจำนวน productId ที่ไม่ซ้ำกัน
-    const uniqueProductIds = new Set(bill.items.map(item => item.product.productId));
-    const uniqueProductCount = uniqueProductIds.size;
-
-    res.json({
-      bill: {
-        ...bill.toObject(),
-        inDate: inDate,
-        uniqueProductCount: uniqueProductCount // เพิ่มจำนวนสินค้าที่ไม่ซ้ำกัน
-      }
-    });
-  } catch (error) {
-    console.error("Error fetching bill:", error);
-    res.status(500).json({ message: "เกิดข้อผิดพลาด", error: error.message });
-  }
-});
-
-// 2. Route สำหรับเพิ่มบิลใหม่
-router.post("/newBill", async (req, res) => {
-  try {
-    const billData = req.body;
-
-    // ตรวจสอบว่า billNumber ซ้ำหรือไม่
-    const existingBill = await Bill.findOne({ billNumber: billData.billNumber });
-    if (existingBill) {
-      return res.status(400).json({ message: "เลขบิลนี้มีอยู่แล้ว กรุณาใช้เลขบิลอื่น" });
-    }
-
-    // กำหนดวันที่ปัจจุบัน
-    const currentDate = new Date().toISOString().split("T")[0];
-
-    // อัปเดต inDate ในทุก product ถ้าไม่ได้ระบุมา
-    const updatedItems = billData.items.map(item => ({
-      product: {
-        ...item.product,
-        inDate: item.product.inDate || currentDate // ถ้าไม่ระบุ inDate ให้ใช้วันที่ปัจจุบัน
-      }
-    }));
-
-    // นับจำนวน productId ที่ไม่ซ้ำกัน
-    const uniqueProductIds = new Set(updatedItems.map(item => item.product.productId));
-    const uniqueProductCount = uniqueProductIds.size;
-
-    // สร้างข้อมูลบิลใหม่
-    const updatedBillData = {
-      ...billData,
-      items: updatedItems
-    };
-
-    const newBill = await Bill.create(updatedBillData);
-    res.status(201).json({
-      ...newBill.toObject(),
-      uniqueProductCount: uniqueProductCount // เพิ่มจำนวนสินค้าที่ไม่ซ้ำกันใน response
-    });
-  } catch (error) {
-    console.error("Error adding bill:", error);
-    // ตรวจสอบว่า error เป็นเพราะ billNumber ซ้ำ (E11000)
-    if (error.code === 11000) {
-      return res.status(400).json({ message: "เลขบิลนี้มีอยู่แล้ว กรุณาใช้เลขบิลอื่น" });
-    }
-    res.status(500).json({ message: "เกิดข้อผิดพลาด", error: error.message });
-  }
-});
-
-// 3. Route สำหรับดึงข้อมูลเซลล์ (ยังคงไว้เผื่อใช้งานในอนาคต)
-router.get("/cells", async (req, res) => {
-  try {
-    const { col, row } = req.query;
-    let query = {};
-
-    // สร้าง query ตาม col และ row
-    if (col) query.col = col;
-    if (row) query.row = parseInt(row);
-
-    console.log("Querying cells with:", query);
-    const cells = await Cell.find(query);
-
-    // จัดกลุ่มเซลล์ตามคอลัมน์
-    const newCells = cells.reduce((acc, cell) => {
-      if (!acc[cell.col]) acc[cell.col] = [];
-      acc[cell.col].push({
-        id: cell.cellId,
-        row: cell.row,
-        subCells: cell.subCells || [],
-        products: cell.products || [],
+    // ตรวจสอบว่า billNumber เป็น string และไม่ว่างเปล่า
+    if (!billNumber || typeof billNumber !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid bill number: billNumber must be a non-empty string",
       });
-      return acc;
-    }, {});
+    }
 
-    // สร้าง object สถานะเซลล์
-    const cellStatus = cells.reduce((acc, cell) => {
-      acc[cell.cellId] = cell.status;
-      return acc;
-    }, {});
+    // ค้นหาบิลโดยใช้ billNumber
+    const bill = await Bill.findOne({ billNumber });
 
+    if (!bill) {
+      return res.status(404).json({
+        success: false,
+        error: `Bill not found with billNumber: ${billNumber}`,
+      });
+    }
+
+    // ส่งข้อมูลบิลกลับในรูปแบบที่ต้องการ
     res.status(200).json({
       success: true,
-      data: { newCells, cellStatus },
+      data: {
+        billNumber: bill.billNumber,
+        items: bill.items.map(item => ({
+          product: {
+            productId: item.product.productId,
+            name: item.product.name,
+            image: item.product.image || null,
+          },
+          quantity: item.quantity,
+        })),
+        totalItems: bill.totalItems,
+        inDate: bill.inDate,
+        endDate: bill.endDate,
+      },
     });
   } catch (error) {
-    console.error("Failed to fetch cells:", error);
-    res.status(500).json({ success: false, error: "Failed to fetch cells" });
+    console.error("Failed to fetch bill:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch bill", details: error.message });
+  }
+});
+
+// Route: ดึงข้อมูลบิลทั้งหมด
+router.get("/allBills", async (req, res) => {
+  try {
+    const bills = await Bill.find();
+    res.status(200).json({
+      success: true,
+      data: bills.map(bill => ({
+        billNumber: bill.billNumber,
+        items: bill.items.map(item => ({
+          product: {
+            productId: item.product.productId,
+            name: item.product.name,
+            image: item.product.image || null,
+          },
+          quantity: item.quantity,
+        })),
+        totalItems: bill.totalItems,
+        inDate: bill.inDate,
+        endDate: bill.endDate,
+      })),
+    });
+  } catch (error) {
+    console.error("Failed to fetch bills:", error);
+    res.status(500).json({ success: false, error: "Failed to fetch bills", details: error.message });
+  }
+});
+
+// Route: ดึงข้อมูลบิลตาม billNumber
+router.get("/:billNumber", protect, async (req, res) => {
+  try {
+    const billNumber = req.params.billNumber;
+
+    // ตรวจสอบว่า billNumber เป็น string และไม่ว่างเปล่า
+    if (!billNumber || typeof billNumber !== "string") {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid bill number: billNumber must be a non-empty string",
+      });
+    }
+
+    // ค้นหาบิลโดยใช้ billNumber
+    const bill = await Bill.findOne({ billNumber });
+
+    if (!bill) {
+      return res.status(404).json({
+        success: false,
+        error: `Bill not found with billNumber: ${billNumber}`,
+      });
+    }
+
+    // ส่งข้อมูลบิลกลับในรูปแบบที่ต้องการ
+    res.status(200).json({
+      success: true,
+      data: {
+        _id: bill._id,
+        billNumber: bill.billNumber,
+        items: bill.items.map(item => ({
+          product: {
+            productId: item.product.productId,
+            name: item.product.name,
+            image: item.product.image || null,
+          },
+          quantity: item.quantity,
+        })),
+        totalItems: bill.totalItems,
+        inDate: bill.inDate,
+        endDate: bill.endDate,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to fetch bill:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch bill",
+      details: error.message,
+    });
   }
 });
 

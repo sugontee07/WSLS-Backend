@@ -18,8 +18,8 @@ EventEmitter.defaultMaxListeners = 15;
 // โหลด environment variables
 dotenv.config();
 
-// ตรวจสอบ environment variables ที่จำเป็น (ลบ PORT ออก)
-const requiredEnvVars = ["MONGO_URI", "MONGO_USER", "MONGO_PASSWORD"];
+// ตรวจสอบ environment variables ที่จำเป็น
+const requiredEnvVars = ["MONGO_URI", "MONGO_USER", "MONGO_PASSWORD", "JWT_SECRET", "BASE_URL"];
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
     console.error(`Error: Environment variable ${envVar} is not set.`);
@@ -44,6 +44,18 @@ app.use("/uploads", express.static(path.join(path.resolve(), "uploads")));
 // Middleware
 app.use(express.json());
 app.use(cors());
+
+// ลงทะเบียนเส้นทาง (Routes)
+app.use("/api/auth", authRoutes);
+app.use("/api/users", userRoutes);
+app.use("/api/role", roleRoutes);
+app.use("/api/cell", cellRoutes);
+app.use("/api/product", productRoutes);
+app.use("/api/bill", billRoutes);
+
+app.get("/api", (req, res) => {
+  res.json({ message: "Hello, API Connected!" });
+});
 
 // ฟังก์ชันเชื่อมต่อ MongoDB ด้วยการจัดการ retry
 async function connectDB() {
@@ -75,18 +87,6 @@ mongoose.connection.on("error", (err) => {
 mongoose.connection.on("disconnected", () => {
   console.log("MongoDB disconnected, attempting to reconnect...");
   connectDB();
-});
-
-// ลงทะเบียนเส้นทาง (Routes)
-app.use("/api/auth", authRoutes);
-app.use("/api/users", userRoutes);
-app.use("/api/role", roleRoutes);
-app.use("/api/cell", cellRoutes);
-app.use("/api/product", productRoutes);
-app.use("/api/bill", billRoutes);
-
-app.get("/api", (req, res) => {
-  res.json({ message: "Hello, API Connected!" });
 });
 
 // Middleware สำหรับจัดการข้อผิดพลาดทั่วไป
