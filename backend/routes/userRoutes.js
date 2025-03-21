@@ -9,7 +9,7 @@ const router = express.Router();
 
 // ตั้งค่า Multer สำหรับ profile pictures
 const profileStorage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, './uploads/profile'), // เปลี่ยน destination
+  destination: (req, file, cb) => cb(null, './uploads/profile'),
   filename: (req, file, cb) => {
     const userId = req.user.id;
     const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1E9)}`;
@@ -30,7 +30,7 @@ const uploadProfile = multer({
   limits: { fileSize: 5 * 1024 * 1024 } // 5MB
 });
 
-// API สำหรับดึงข้อมูลผู้ใช้ทั้งหมด
+// API สำหรับดึงข้อมูลผู้ใช้ทั้งหมด (เฉพาะ Admin)
 router.get('/all', protect, isAdmin, async (req, res) => {
   try {
     const users = await User.find().select('-password -__v').sort({ employeeId: 1 });
@@ -88,7 +88,7 @@ router.get('/profile/me', protect, async (req, res) => {
       email: user.email,
       employeeId: user.employeeId,
       department: user.department,
-      phoneNumber: user.phoneNumber,
+      phoneNumber: user.phoneNumber || '', // ใส่ค่า default เป็น '' ถ้าไม่มี
       profilePicture: fullProfilePic,
       role: user.role,
       updated_at: user.updated_at
@@ -105,7 +105,7 @@ router.get('/profile/me', protect, async (req, res) => {
   }
 });
 
-// API อัปเดตโปรไฟล์ของผู้ใช้ที่ล็อกอิน
+// API อัปเดตโปรไฟล์ของผู้ใช้ที่ล็อกอิน (สำหรับ User)
 router.put('/profile/me', protect, uploadProfile.single('profilePicture'), async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select('-password');
@@ -115,6 +115,110 @@ router.put('/profile/me', protect, uploadProfile.single('profilePicture'), async
 
     let updatedData = {};
     const { firstName, lastName, department, email, phoneNumber } = req.body;
+
+    // จัดการการอัปโหลดรูปภาพ
+    if (req.file) {
+      if (!req.file.mimetype.match(/^image\/(jpeg|jpg|png)$/)) {
+        return res.status(400).json({ status: 'error', message: 'Only image files are allowed (jpeg, jpg, png)' });
+      }
+
+      if (user.profilePicture) {
+        const basePath = path.resolve(process.cwd(), 'uploads', 'profile');
+        const oldImagePath = path.resolve(basePath, user.profilePicture.replace(/^\/uploads\/profile\//, ''));
+        try {
+          const fileExists = await fs.access(oldImagePath).then(() => true).catch(() => false);
+          if (fileExists) {
+            await fs.unlink(oldImagePath);
+            console.log(`Deleted old profile picture: ${oldImagePath}`);
+          } else {
+            console.log(`Old profile picture not found: ${oldImagePath}`);
+          }
+        } catch (err) {
+          console.error(`Error deleting old profile picture: ${err.message}`);
+          return res.status(500).json({ status: 'error', message: 'Failed to delete old profile picture' });
+        }
+      }
+
+      updatedData.profilePicture = `/uploads/profile/${req.file.filename}`;
+      console.log('New profile picture path:', updatedData.profilePicture);
+    }
+
+    // ตรวจสอบและอัปเดตข้อมูล (ไม่รวม role)
+    if (firstName || lastName || department || email || phoneNumber || req.file) {
+      if (firstName && (firstName.length > 50 || !firstName.trim())) {
+        return res.status(400).json({ status: 'error', message: 'Invalid first name' });
+      }
+      if (lastName && (lastName.length > 50 || !lastName.trim())) {
+        return res.status(400).json({ status: 'error', message: 'Invalid last name' });
+      }
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid email' });
+      }
+      if (phoneNumber && !/^\d{10}$/.test(phoneNumber)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid phone number' });
+      }
+
+      updatedData = {
+        ...updatedData,
+        firstName: firstName || user.firstName,
+        lastName: lastName || user.lastName,
+        department: department || user.department,
+        email: email || user.email,
+        phoneNumber: phoneNumber || user.phoneNumber || '',
+        updated_at: new Date()
+      };
+    } else {
+      return res.status(400).json({ status: 'error', message: 'No updates provided' });
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      req.user.id,
+      updatedData,
+      { new: true, runValidators: true, select: '-password' }
+    );
+
+    const profilePic = updatedUser.profilePicture;
+    const fullProfilePic = profilePic
+      ? profilePic.startsWith('http')
+        ? profilePic
+        : `http://172.18.43.37:3000${profilePic}`
+      : '';
+
+    const userResponse = {
+      id: updatedUser._id,
+      firstName: updatedUser.firstName,
+      lastName: updatedUser.lastName,
+      email: updatedUser.email,
+      employeeId: updatedUser.employeeId,
+      department: updatedUser.department,
+      phoneNumber: updatedUser.phoneNumber || '',
+      profilePicture: fullProfilePic,
+      role: updatedUser.role,
+      updated_at: updatedUser.updated_at
+    };
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Profile updated successfully',
+      data: userResponse
+    });
+  } catch (error) {
+    console.error('Update profile error:', error.stack);
+    res.status(500).json({ status: 'error', message: 'Server error' });
+  }
+});
+
+// API อัปเดตโปรไฟล์ของผู้ใช้โดย Admin
+router.put('/profile/:userId', protect, isAdmin, uploadProfile.single('profilePicture'), async (req, res) => {
+  try {
+    const userId = req.params.userId;
+    const user = await User.findById(userId).select('-password');
+    if (!user) {
+      return res.status(404).json({ status: 'error', message: 'User not found' });
+    }
+
+    let updatedData = {};
+    const { firstName, lastName, department, email, phoneNumber, role } = req.body;
 
     if (req.file) {
       if (!req.file.mimetype.match(/^image\/(jpeg|jpg|png)$/)) {
@@ -142,11 +246,22 @@ router.put('/profile/me', protect, uploadProfile.single('profilePicture'), async
       console.log('New profile picture path:', updatedData.profilePicture);
     }
 
-    if (firstName || lastName || department || email || phoneNumber || req.file) {
+    if (firstName || lastName || department || email || phoneNumber || role || req.file) {
       if (firstName && (firstName.length > 50 || !firstName.trim())) {
         return res.status(400).json({ status: 'error', message: 'Invalid first name' });
       }
-      // ... (โค้ด validation อื่น ๆ)
+      if (lastName && (lastName.length > 50 || !lastName.trim())) {
+        return res.status(400).json({ status: 'error', message: 'Invalid last name' });
+      }
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid email' });
+      }
+      if (phoneNumber && !/^\d{10}$/.test(phoneNumber)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid phone number' });
+      }
+      if (role && !['user', 'admin'].includes(role)) {
+        return res.status(400).json({ status: 'error', message: 'Invalid role' });
+      }
 
       updatedData = {
         ...updatedData,
@@ -154,7 +269,8 @@ router.put('/profile/me', protect, uploadProfile.single('profilePicture'), async
         lastName: lastName || user.lastName,
         department: department || user.department,
         email: email || user.email,
-        phoneNumber: phoneNumber || user.phoneNumber,
+        phoneNumber: phoneNumber || user.phoneNumber || '',
+        role: role || user.role,
         updated_at: new Date()
       };
     } else {
@@ -162,7 +278,7 @@ router.put('/profile/me', protect, uploadProfile.single('profilePicture'), async
     }
 
     const updatedUser = await User.findByIdAndUpdate(
-      req.user.id,
+      userId,
       updatedData,
       { new: true, runValidators: true, select: '-password' }
     );
@@ -181,7 +297,7 @@ router.put('/profile/me', protect, uploadProfile.single('profilePicture'), async
       email: updatedUser.email,
       employeeId: updatedUser.employeeId,
       department: updatedUser.department,
-      phoneNumber: updatedUser.phoneNumber,
+      phoneNumber: updatedUser.phoneNumber || '',
       profilePicture: fullProfilePic,
       role: updatedUser.role,
       updated_at: updatedUser.updated_at
@@ -193,99 +309,7 @@ router.put('/profile/me', protect, uploadProfile.single('profilePicture'), async
       data: userResponse
     });
   } catch (error) {
-    console.error('Update profile error:', error.stack);
-    res.status(500).json({ status: 'error', message: 'Server error' });
-  }
-});
-
-// API อัปเดตโปรไฟล์ของผู้ใช้ตาม ID (เฉพาะ Admin)
-router.put('/profile/me', protect, uploadProfile.single('profilePicture'), async (req, res) => {
-  try {
-    const user = await User.findById(req.user.id).select('-password');
-    if (!user) {
-      return res.status(404).json({ status: 'error', message: 'User not found' });
-    }
-
-    let updatedData = {};
-    const { firstName, lastName, department, email, phoneNumber } = req.body;
-
-    if (req.file) {
-      // ตรวจสอบ mimetype อีกครั้ง (ตามความปลอดภัย)
-      if (!req.file.mimetype.match(/^image\/(jpeg|jpg|png)$/)) {
-        return res.status(400).json({ status: 'error', message: 'Only image files are allowed (jpeg, jpg, png)' });
-      }
-
-      // ลบรูปภาพเก่าถ้ามี
-      if (user.profilePicture) {
-        const oldImagePath = path.resolve('uploads/profile', user.profilePicture.replace(/^\/uploads\/profile\//, ''));
-        try {
-          await fs.unlink(oldImagePath);
-          console.log(`Deleted old profile picture: ${oldImagePath}`);
-        } catch (err) {
-          console.error(`Error deleting old profile picture: ${err.message}`);
-          return res.status(500).json({ status: 'error', message: 'Failed to delete old profile picture' });
-        }
-      }
-
-      // กำหนด path ใหม่สำหรับรูปภาพ
-      updatedData.profilePicture = `/uploads/profile/${req.file.filename}`;
-      console.log('New profile picture path:', updatedData.profilePicture);
-    }
-
-    // อัปเดตข้อมูลอื่น ๆ
-    if (firstName || lastName || department || email || phoneNumber || req.file) {
-      // ตรวจสอบ validation (คงโค้ดเดิมไว้)
-      if (firstName && (firstName.length > 50 || !firstName.trim())) {
-        return res.status(400).json({ status: 'error', message: 'Invalid first name' });
-      }
-      // ... (โค้ด validation อื่น ๆ)
-
-      updatedData = {
-        ...updatedData,
-        firstName: firstName || user.firstName,
-        lastName: lastName || user.lastName,
-        department: department || user.department,
-        email: email || user.email,
-        phoneNumber: phoneNumber || user.phoneNumber,
-        updated_at: new Date()
-      };
-    } else {
-      return res.status(400).json({ status: 'error', message: 'No updates provided' });
-    }
-
-    const updatedUser = await User.findByIdAndUpdate(
-      req.user.id,
-      updatedData,
-      { new: true, runValidators: true, select: '-password' }
-    );
-
-    const profilePic = updatedUser.profilePicture;
-    const fullProfilePic = profilePic
-      ? profilePic.startsWith('http')
-        ? profilePic
-        : `http://172.18.43.37:3000${profilePic}`
-      : '';
-
-    const userResponse = {
-      id: updatedUser._id,
-      firstName: updatedUser.firstName,
-      lastName: updatedUser.lastName,
-      email: updatedUser.email,
-      employeeId: updatedUser.employeeId,
-      department: updatedUser.department,
-      phoneNumber: updatedUser.phoneNumber,
-      profilePicture: fullProfilePic,
-      role: updatedUser.role,
-      updated_at: updatedUser.updated_at
-    };
-
-    res.status(200).json({
-      status: 'success',
-      message: 'Profile updated successfully',
-      data: userResponse
-    });
-  } catch (error) {
-    console.error('Update profile error:', error.stack);
+    console.error('Update profile by admin error:', error.stack);
     res.status(500).json({ status: 'error', message: 'Server error' });
   }
 });

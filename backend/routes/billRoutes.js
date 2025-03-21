@@ -127,7 +127,7 @@ router.get("/allBills", async (req, res) => {
 });
 
 // Route: ดึงข้อมูลบิลตาม billNumber
-router.get("/buillNumber/:billNumber", protect, async (req, res) => {
+router.get("/billlNumber/:billNumber", protect, async (req, res) => {
   try {
     const billNumber = req.params.billNumber;
     if (!billNumber || typeof billNumber !== "string") {

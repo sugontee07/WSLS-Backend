@@ -4,7 +4,7 @@ const billItemSchema = new mongoose.Schema({
   product: {
     productId: { type: String, required: true },
     name: { type: String, required: true },
-    type: { type: String, required: true }, // เพิ่ม type
+    type: { type: String, required: true },
     image: { type: String },
   },
   quantity: {
@@ -13,9 +13,8 @@ const billItemSchema = new mongoose.Schema({
     min: [1, "Quantity must be at least 1"],
   },
   endDate: {
-    type: String,
+    type: Date, // เปลี่ยนเป็น Date
     required: [true, "endDate is required for each item"],
-    match: [/^\d{4}-\d{2}-\d{2}$/, "endDate must be in format YYYY-MM-DD"],
   },
 });
 
@@ -24,15 +23,8 @@ const billSchema = new mongoose.Schema({
   items: [billItemSchema],
   totalItems: { type: Number, required: true, default: 0 },
   inDate: {
-    type: String,
-    default: () => {
-      const date = new Date();
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, "0");
-      const day = String(date.getDate()).padStart(2, "0");
-      return `${year}-${month}-${day}`;
-    },
-    match: [/^\d{4}-\d{2}-\d{2}$/, "inDate must be in format YYYY-MM-DD"],
+    type: Date, // เปลี่ยนเป็น Date
+    default: () => new Date(), // สร้าง Date object โดยตรง
   },
 });
 

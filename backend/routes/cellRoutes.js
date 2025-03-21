@@ -1,88 +1,12 @@
-//cellRoutes.js
 import express from "express";
 import mongoose from "mongoose";
-import dotenv from 'dotenv';  
+import dotenv from 'dotenv';
 import { protect, isAdmin } from '../middleware/auth.js';
+import Cell from "../model/Cell.js"; // นำเข้า Cell model จาก Cell.js
 
 dotenv.config();
 
 const router = express.Router();
-
-const cellSchema = new mongoose.Schema({
-  cellId: { type: String, required: true, unique: true },
-  col: { type: String, required: true },
-  row: { type: String, required: true },
-  status: { type: Number, enum: [0, 1, 2, 3], default: 0 },
-  divisionType: { type: String, enum: [null, "single", "dual"], default: null },
-  products: [
-    {
-      product: { type: mongoose.Schema.Types.ObjectId, ref: "Product" },
-      quantity: { type: Number, default: 0 },
-    },
-  ],
-  subCellsA: {
-    status: { type: Number, enum: [0, 1, 2, 3], default: 0 },
-    products: [
-      {
-        product: { type: mongoose.Schema.Types.ObjectId, ref: "Product" },
-        quantity: { type: Number, default: 0 },
-      },
-    ],
-    label: { type: String, default: function () { return this.cellId + "R1"; } },
-  },
-  subCellsB: {
-    status: { type: Number, enum: [0, 1, 2, 3], default: 0 },
-    products: [
-      {
-        product: { type: mongoose.Schema.Types.ObjectId, ref: "Product" },
-        quantity: { type: Number, default: 0 },
-      },
-    ],
-    label: { type: String, default: function () { return this.cellId + "R2"; } },
-  },
-}, { timestamps: true });
-
-// ตรวจสอบและกำหนดค่าเริ่มต้นให้ subCells ก่อนบันทึก
-cellSchema.pre('save', function(next) {
-  if (!this.subCellsA || typeof this.subCellsA.status === 'undefined') {
-    this.subCellsA = { status: 0, products: [], label: this.cellId + "R1" };
-  }
-  if (!this.subCellsB || typeof this.subCellsB.status === 'undefined') {
-    this.subCellsB = { status: 0, products: [], label: this.cellId + "R2" };
-  }
-  this.subCellsA.status = Number(this.subCellsA.status);
-  this.subCellsB.status = Number(this.subCellsB.status);
-  next();
-});
-
-const Cell = mongoose.model("Cell", cellSchema);
-
-// Migration script เพื่ออัปเดตข้อมูลเก่า
-async function migrateOldCells() {
-  const cells = await Cell.find();
-  for (const cell of cells) {
-    if (cell.status === null || cell.status === undefined) {
-      cell.status = 0;
-    }
-
-    if (!cell.subCellsA || !cell.subCellsB || !cell.divisionType) {
-      cell.divisionType = cell.divisionType || null;
-      cell.subCellsA = { status: 0, products: [], label: cell.cellId + "R1" };
-      cell.subCellsB = { status: 0, products: [], label: cell.cellId + "R2" };
-    } else {
-      if (cell.subCellsA.status === null || cell.subCellsA.status === undefined) {
-        cell.subCellsA.status = 0;
-      }
-      if (cell.subCellsB.status === null || cell.subCellsB.status === undefined) {
-        cell.subCellsB.status = 0;
-      }
-    }
-
-    await cell.save();
-  }
-}
-
-migrateOldCells().catch(console.error);
 
 // Middleware สำหรับตรวจสอบข้อมูล Cell
 const validateCellData = (req, res, next) => {
@@ -165,13 +89,12 @@ router.put("/edit-subcells", validateEditSubCells, async (req, res) => {
       return res.status(404).json({ success: false, error: "Cell not found" });
     }
 
-    if (cell.divisionType !== null) {
-      return res.status(400).json({ success: false, error: "Cell is already divided" });
+    if (cell.divisionType !== "single") {
+      return res.status(400).json({ success: false, error: "Cell is already divided or not in single mode" });
     }
 
-    const Product = mongoose.model("Product"); // อ้างอิง Product model จาก mongoose
-    const productsInCell = await Product.find({ "location.cellId": cell._id });
-    if (productsInCell.length > 0) {
+    // ตรวจสอบว่ามีสินค้าใน Cell หรือไม่
+    if (cell.products && cell.products.length > 0) {
       return res.status(400).json({ success: false, error: "Cannot divide cell with existing products" });
     }
 
@@ -181,9 +104,13 @@ router.put("/edit-subcells", validateEditSubCells, async (req, res) => {
     if (subCellChoice === "both") {
       cell.subCellsA.status = 1;
       cell.subCellsB.status = 1;
+      cell.subCellsA.label = `${cell.cellId}R1`;
+      cell.subCellsB.label = `${cell.cellId}R2`;
     } else {
-      cell.subCellsA.status = Number(subCellChoice === "A" ? 1 : 0);
-      cell.subCellsB.status = Number(subCellChoice === "B" ? 1 : 0);
+      cell.subCellsA.status = subCellChoice === "R1" ? 1 : 0;
+      cell.subCellsB.status = subCellChoice === "R2" ? 1 : 0;
+      cell.subCellsA.label = subCellChoice === "R1" || subCellChoice === "both" ? `${cell.cellId}R1` : null;
+      cell.subCellsB.label = subCellChoice === "R2" || subCellChoice === "both" ? `${cell.cellId}R2` : null;
     }
 
     await cell.save();
@@ -224,8 +151,6 @@ router.put("/update-status", protect, async (req, res) => {
     const isSubCell = cellId.includes("-A") || cellId.includes("-B");
     let cell;
 
-    const Product = mongoose.model("Product"); // อ้างอิง Product model จาก mongoose
-
     if (isSubCell) {
       const mainCellId = cellId.split("-").slice(0, 2).join("-");
       cell = await Cell.findOne({ cellId: mainCellId });
@@ -242,33 +167,23 @@ router.put("/update-status", protect, async (req, res) => {
         const subCellBProducts = cell.subCellsB.products || [];
 
         if (subCellAProducts.length > 0 || subCellBProducts.length > 0) {
-          // ลบสินค้าที่อยู่ใน subCells
-          await Product.deleteMany({
-            _id: { $in: [...subCellAProducts.map(p => p.product), ...subCellBProducts.map(p => p.product)] },
-          });
+          cell.subCellsA.products = [];
+          cell.subCellsB.products = [];
         }
 
         cell.divisionType = "single";
         cell.status = 0;
-        cell.subCellsA = { status: 0, products: [], label: `${mainCellId}R1` };
-        cell.subCellsB = { status: 0, products: [], label: `${mainCellId}R2` };
+        cell.subCellsA = { status: 0, products: [], label: null };
+        cell.subCellsB = { status: 0, products: [], label: null };
       } else {
         if (cellId.endsWith("-A")) {
           if (status === 0) {
-            const productIds = cell.subCellsA.products || [];
-            if (productIds.length > 0) {
-              await Product.deleteMany({ _id: { $in: productIds.map(p => p.product) } });
-              cell.subCellsA.products = [];
-            }
+            cell.subCellsA.products = [];
           }
           cell.subCellsA.status = status;
         } else if (cellId.endsWith("-B")) {
           if (status === 0) {
-            const productIds = cell.subCellsB.products || [];
-            if (productIds.length > 0) {
-              await Product.deleteMany({ _id: { $in: productIds.map(p => p.product) } });
-              cell.subCellsB.products = [];
-            }
+            cell.subCellsB.products = [];
           }
           cell.subCellsB.status = status;
         }
@@ -285,11 +200,7 @@ router.put("/update-status", protect, async (req, res) => {
         });
       }
       if (status === 0) {
-        const products = await Product.find({ "location.cellId": cell._id });
-        if (products.length > 0) {
-          await Product.deleteMany({ "location.cellId": cell._id });
-        }
-        cell.products = []; // ลบสินค้าออกด้วยเมื่อ status เป็น 0
+        cell.products = [];
       }
       cell.status = status;
     }
@@ -321,11 +232,253 @@ router.get("/cellsAll", async (req, res) => {
     let query = {};
     if (col) query.col = col;
     if (row) query.row = row;
-    const cells = await Cell.find(query);
-    res.status(200).json({ success: true, data: cells });
+
+    // ดึงข้อมูล Cells และแปลงเป็น plain JavaScript object ด้วย .lean()
+    const cells = await Cell.find(query).lean();
+    console.log("Raw cells data:", cells); // เพิ่ม log เพื่อตรวจสอบข้อมูลดิบ
+
+    // ปรับแต่งข้อมูลใน cells
+    const formattedCells = cells.map(cell => {
+      // ฟังก์ชันสำหรับแปลงวันที่
+      const formatProduct = (product) => {
+        console.log("Raw product data:", product); // เพิ่ม log เพื่อตรวจสอบ product
+        return {
+          product: {
+            productId: product.product.productId,
+            type: product.product.type,
+            name: product.product.name,
+            image: product.product.image,
+          },
+          quantity: product.quantity,
+          endDate: product.endDate ? new Date(product.endDate).toISOString().split("T")[0] : null,
+          inDate: product.inDate ? new Date(product.inDate).toISOString().split("T")[0] : null,
+        };
+      };
+
+      // ปรับแต่ง products
+      if (cell.products && cell.products.length > 0) {
+        cell.products = cell.products.map(formatProduct);
+      }
+
+      // ปรับแต่ง subCellsA.products
+      if (cell.subCellsA && cell.subCellsA.products && cell.subCellsA.products.length > 0) {
+        cell.subCellsA.products = cell.subCellsA.products.map(formatProduct);
+      }
+
+      // ปรับแต่ง subCellsB.products
+      if (cell.subCellsB && cell.subCellsB.products && cell.subCellsB.products.length > 0) {
+        cell.subCellsB.products = cell.subCellsB.products.map(formatProduct);
+      }
+
+      return cell;
+    });
+
+    res.status(200).json({ success: true, data: formattedCells });
   } catch (error) {
     console.error("Failed to fetch cells:", error);
     res.status(500).json({ success: false, error: "Failed to fetch cells" });
+  }
+});
+
+// Route: เพิ่มสินค้าจากบิลไปยัง Cell ที่เลือก (แยกสินค้าไปยัง location ต่าง ๆ ได้)
+router.post("/assign-products-from-bill", async (req, res) => {
+  try {
+    const { billNumber, assignments } = req.body;
+
+    // ตรวจสอบ input
+    if (!billNumber || !assignments || !Array.isArray(assignments) || assignments.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required fields: billNumber and assignments (array) are required",
+      });
+    }
+
+    // ตรวจสอบว่า assignments มีข้อมูลครบถ้วน
+    for (const assignment of assignments) {
+      if (!assignment.productId || !assignment.cellId) {
+        return res.status(400).json({
+          success: false,
+          error: "Each assignment must include productId and cellId",
+        });
+      }
+    }
+
+    // ดึงข้อมูลบิล
+    const Bill = mongoose.model("Bill");
+    const bill = await Bill.findOne({ billNumber });
+    if (!bill) {
+      return res.status(404).json({ success: false, error: "Bill not found" });
+    }
+
+    const items = bill.items;
+    if (!items || items.length === 0) {
+      return res.status(400).json({ success: false, error: "No items found in the bill" });
+    }
+
+    // ตรวจสอบ inDate ของ bill
+    if (!bill.inDate) {
+      return res.status(400).json({
+        success: false,
+        error: "Bill is missing required field: inDate",
+      });
+    }
+
+    // เก็บผลลัพธ์การ assign
+    const assignmentResults = [];
+    const cellsToUpdate = new Map();
+
+    // วนลูปเพื่อ assign สินค้าแต่ละตัว
+    for (const assignment of assignments) {
+      const { productId, cellId, subCell } = assignment;
+
+      // ตรวจสอบว่าสินค้าอยู่ในบิลหรือไม่
+      const item = items.find(i => i.product.productId === productId);
+      if (!item) {
+        return res.status(400).json({
+          success: false,
+          error: `Product with ID ${productId} not found in bill ${billNumber}`,
+        });
+      }
+
+      // ตรวจสอบข้อมูลที่จำเป็น
+      if (!item.product.type || !item.product.name) {
+        return res.status(400).json({
+          success: false,
+          error: `Product with ID ${productId} is missing required fields: type or name`,
+        });
+      }
+
+      // ตรวจสอบ endDate ของ item
+      if (!item.endDate) {
+        return res.status(400).json({
+          success: false,
+          error: `Product with ID ${productId} is missing required field: endDate`,
+        });
+      }
+
+      // ตรวจสอบและแปลงวันที่
+      const inDate = new Date(bill.inDate);
+      const endDate = new Date(item.endDate);
+      if (isNaN(inDate.getTime()) || isNaN(endDate.getTime())) {
+        return res.status(400).json({
+          success: false,
+          error: "Invalid date format for inDate or endDate",
+        });
+      }
+
+      // ดึงข้อมูล Cell
+      let cell = cellsToUpdate.get(cellId);
+      if (!cell) {
+        cell = await Cell.findOne({ cellId });
+        if (!cell) {
+          return res.status(404).json({ success: false, error: `Cell ${cellId} not found` });
+        }
+        cellsToUpdate.set(cellId, cell);
+      }
+
+      // Handle "null" string as null
+      const effectiveSubCell = subCell === "null" ? null : subCell;
+
+      let targetStatus;
+      let targetProducts;
+
+      // ตรวจสอบว่าเป็น subCell หรือ Cell หลัก
+      if (effectiveSubCell) {
+        if (cell.divisionType !== "dual") {
+          return res.status(400).json({ success: false, error: `Cell ${cellId} is not divided into subCells` });
+        }
+
+        if (effectiveSubCell === "subCellsA") {
+          targetStatus = cell.subCellsA.status;
+          targetProducts = cell.subCellsA.products || [];
+        } else if (effectiveSubCell === "subCellsB") {
+          targetStatus = cell.subCellsB.status;
+          targetProducts = cell.subCellsB.products || [];
+        } else {
+          return res.status(400).json({
+            success: false,
+            error: "Invalid subCell value, must be 'subCellsA' or 'subCellsB'",
+          });
+        }
+      } else {
+        if (cell.divisionType === "dual") {
+          return res.status(400).json({
+            success: false,
+            error: "Cannot assign products to a dual-divided cell directly; specify subCell instead",
+          });
+        }
+        targetStatus = cell.status;
+        targetProducts = cell.products || [];
+      }
+
+      // ตรวจสอบว่า Cell หรือ subCell พร้อมรับสินค้าหรือไม่ (status ต้องเป็น 1)
+      if (targetStatus !== 1) {
+        return res.status(400).json({
+          success: false,
+          error: `Selected cell or subCell ${cellId}${effectiveSubCell ? `-${effectiveSubCell}` : ''} is not available (status must be 1)`,
+        });
+      }
+
+      // ตรวจสอบ productId ซ้ำและรวม quantity
+      const existingProduct = targetProducts.find(p => p.product.productId === item.product.productId);
+      if (existingProduct) {
+        existingProduct.quantity += item.quantity;
+      } else {
+        // เพิ่มสินค้าลงใน targetProducts ด้วยโครงสร้างใหม่
+        targetProducts.push({
+          product: {
+            productId: item.product.productId,
+            type: item.product.type,
+            name: item.product.name,
+            image: item.product.image || null,
+          },
+          quantity: item.quantity,
+          endDate: endDate,
+          inDate: inDate,
+        });
+      }
+
+      // บันทึกสินค้าลงใน Cell หรือ subCell โดยไม่เปลี่ยน status
+      if (effectiveSubCell === "subCellsA") {
+        cell.subCellsA.products = targetProducts;
+      } else if (effectiveSubCell === "subCellsB") {
+        cell.subCellsB.products = targetProducts;
+      } else {
+        cell.products = targetProducts;
+      }
+
+      // Debug log
+      console.log(`Assigned product ${productId} to Cell ${cellId}${effectiveSubCell ? `-${effectiveSubCell}` : ''}`);
+
+      // เก็บผลลัพธ์สำหรับสินค้านี้
+      assignmentResults.push({
+        product: {
+          productId: item.product.productId,
+          type: item.product.type,
+          name: item.product.name,
+          image: item.product.image || null,
+        },
+        quantity: item.quantity,
+        endDate: endDate.toISOString().split("T")[0], // แปลงเป็น "YYYY-MM-DD"
+        inDate: inDate.toISOString().split("T")[0], // เพิ่ม inDate ในผลลัพธ์
+      });
+    }
+
+    // บันทึกการเปลี่ยนแปลงทั้งหมดใน Cell
+    await Promise.all([...cellsToUpdate.values()].map(async (cell) => {
+      console.log(`Before saving Cell ${cell.cellId}:`, cell.products);
+      await cell.save();
+      console.log(`After saving Cell ${cell.cellId}:`, (await Cell.findOne({ cellId: cell.cellId })).products);
+    }));
+
+    res.status(200).json({
+      success: true,
+      message: "Products assigned to cells successfully",
+      data: assignmentResults,
+    });
+  } catch (error) {
+    console.error("Failed to assign products from bill:", error);
+    res.status(500).json({ success: false, error: "Failed to assign products", details: error.message });
   }
 });
 
@@ -380,150 +533,6 @@ router.get("/summary", async (req, res) => {
   } catch (error) {
     console.error("Failed to fetch cell summary:", error);
     res.status(500).json({ success: false, error: "Failed to fetch cell summary" });
-  }
-});
-
-// Route: เพิ่มสินค้าจากบิลไปยัง Cell ที่เลือก (แยกสินค้าไปยัง location ต่าง ๆ ได้)
-router.post("/assign-products-from-bill", async (req, res) => {
-  try {
-    const { billNumber, assignments } = req.body;
-
-    // ตรวจสอบ input
-    if (!billNumber || !assignments || !Array.isArray(assignments) || assignments.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing required fields: billNumber and assignments (array) are required",
-      });
-    }
-
-    // ตรวจสอบว่า assignments มีข้อมูลครบถ้วน
-    for (const assignment of assignments) {
-      if (!assignment.productId || !assignment.cellId) {
-        return res.status(400).json({
-          success: false,
-          error: "Each assignment must include productId and cellId",
-        });
-      }
-    }
-
-    // ดึงข้อมูลบิล
-    const Bill = mongoose.model("Bill");
-    const bill = await Bill.findOne({ billNumber });
-    if (!bill) {
-      return res.status(404).json({ success: false, error: "Bill not found" });
-    }
-
-    const items = bill.items;
-    if (!items || items.length === 0) {
-      return res.status(400).json({ success: false, error: "No items found in the bill" });
-    }
-
-    // เก็บผลลัพธ์การ assign
-    const assignmentResults = [];
-
-    // วนลูปเพื่อ assign สินค้าแต่ละตัว
-    for (const assignment of assignments) {
-      const { productId, cellId, subCell } = assignment;
-
-      // ตรวจสอบว่าสินค้าอยู่ในบิลหรือไม่
-      const item = items.find(i => i.product.productId === productId);
-      if (!item) {
-        return res.status(400).json({
-          success: false,
-          error: `Product with ID ${productId} not found in bill ${billNumber}`,
-        });
-      }
-
-      // ดึงข้อมูล Cell
-      const cell = await Cell.findOne({ cellId });
-      if (!cell) {
-        return res.status(404).json({ success: false, error: `Cell ${cellId} not found` });
-      }
-
-      // Handle "null" string as null
-      const effectiveSubCell = subCell === "null" ? null : subCell;
-
-      let targetStatus;
-      let targetProducts;
-      let targetLocation;
-
-      // ตรวจสอบว่าเป็น subCell หรือ Cell หลัก
-      if (effectiveSubCell) {
-        if (cell.divisionType !== "dual") {
-          return res.status(400).json({ success: false, error: `Cell ${cellId} is not divided into subCells` });
-        }
-
-        if (effectiveSubCell === "subCellsA") {
-          targetStatus = cell.subCellsA.status;
-          targetProducts = cell.subCellsA.products || [];
-          targetLocation = cell.subCellsA.label;
-        } else if (effectiveSubCell === "subCellsB") {
-          targetStatus = cell.subCellsB.status;
-          targetProducts = cell.subCellsB.products || [];
-          targetLocation = cell.subCellsB.label;
-        } else {
-          return res.status(400).json({
-            success: false,
-            error: "Invalid subCell value, must be 'subCellsA' or 'subCellsB'",
-          });
-        }
-      } else {
-        if (cell.divisionType === "dual") {
-          return res.status(400).json({
-            success: false,
-            error: "Cannot assign products to a dual-divided cell directly; specify subCell instead",
-          });
-        }
-        targetStatus = cell.status;
-        targetProducts = cell.products || [];
-        targetLocation = cell.cellId;
-      }
-
-      // ตรวจสอบว่า Cell หรือ subCell พร้อมรับสินค้าหรือไม่ (status ต้องเป็น 1)
-      if (targetStatus !== 1) {
-        return res.status(400).json({
-          success: false,
-          error: `Selected cell or subCell ${cellId}${effectiveSubCell ? `-${effectiveSubCell}` : ''} is not available (status must be 1)`,
-        });
-      }
-
-      // เพิ่มสินค้าลงใน targetProducts
-      targetProducts.push({
-        product: item.product.productId, // ใช้ productId แทน ObjectId
-        quantity: item.quantity,
-      });
-
-      // บันทึกสินค้าลงใน Cell หรือ subCell โดยไม่เปลี่ยน status
-      if (effectiveSubCell === "subCellsA") {
-        cell.subCellsA.products = targetProducts;
-      } else if (effectiveSubCell === "subCellsB") {
-        cell.subCellsB.products = targetProducts;
-      } else {
-        cell.products = targetProducts;
-      }
-
-      // เก็บผลลัพธ์สำหรับสินค้านี้
-      assignmentResults.push({
-        productId: item.product.productId,
-        productName: item.product.name,
-        quantity: item.quantity,
-        location: targetLocation,
-      });
-    }
-
-    // บันทึกการเปลี่ยนแปลงทั้งหมดใน Cell
-    await Promise.all(
-      (await Cell.find({ cellId: { $in: assignments.map(a => a.cellId) } })).map(cell => cell.save())
-    );
-
-    res.status(200).json({
-      success: true,
-      message: "Products assigned to cells successfully",
-      data: assignmentResults,
-    });
-  } catch (error) {
-    console.error("Failed to assign products from bill:", error);
-    res.status(500).json({ success: false, error: "Failed to assign products", details: error.message });
   }
 });
 
