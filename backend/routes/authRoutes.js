@@ -82,32 +82,55 @@ router.post('/Register', async (req, res) => {
   }
 });
 
-// Login Route
 router.post('/login', async (req, res) => {
   const { employeeId, password } = req.body;
 
   try {
+    // ตรวจสอบ input
     if (!employeeId || !password) {
-      return res.status(400).json({ success: false, message: 'EmployeeID and password are required' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'กรุณาระบุ EmployeeID และรหัสผ่าน' 
+      });
     }
 
+    // ค้นหาผู้ใช้
     const user = await User.findOne({ employeeId });
     if (!user) {
-      return res.status(400).json({ success: false, message: 'Invalid employee ID or password' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Employee ID หรือรหัสผ่านไม่ถูกต้อง' 
+      });
     }
 
+    // ตรวจสอบสถานะ userstatus
+    if (!user.userstatus) { // เปลี่ยนจาก active เป็น userstatus
+      return res.status(403).json({
+        success: false,
+        message: 'บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อเจ้าหน้าที่'
+      });
+    }
+
+    // ตรวจสอบรหัสผ่าน
     const isMatch = await user.comparePassword(password);
     if (!isMatch) {
-      return res.status(400).json({ success: false, message: 'Invalid employee ID or password' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Employee ID หรือรหัสผ่านไม่ถูกต้อง' 
+      });
     }
 
-    const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, {
-      expiresIn: process.env.JWT_EXPIRES_IN || '30d',
-    });
+    // สร้าง JWT token
+    const token = jwt.sign(
+      { id: user._id, role: user.role }, 
+      process.env.JWT_SECRET, 
+      { expiresIn: process.env.JWT_EXPIRES_IN || '30d' }
+    );
 
+    // ส่ง response
     res.status(200).json({
       success: true,
-      message: 'Login successful',
+      message: 'เข้าสู่ระบบสำเร็จ',
       token,
       user: {
         id: user._id,
@@ -119,65 +142,95 @@ router.post('/login', async (req, res) => {
       },
     });
   } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    console.error('ข้อผิดพลาดในการเข้าสู่ระบบ:', {
+      error: error.message,
+      stack: error.stack,
+      employeeId
+    });
+    res.status(500).json({ 
+      success: false, 
+      message: 'เกิดข้อผิดพลาดในเซิร์ฟเวอร์' 
+    });
   }
 });
 
-// Forgot Password Route with Nodemailer
 router.post('/forgot-password', async (req, res) => {
   console.log('Forgot password route hit:', req.body);
   try {
     const { email } = req.body;
 
+    // ตรวจสอบ input
     if (!email) {
-      return res.status(400).json({ success: false, message: 'Email is required' });
+      return res.status(400).json({ 
+        success: false, 
+        message: 'กรุณาระบุอีเมล' 
+      });
     }
 
+    // ค้นหาผู้ใช้
     const user = await User.findOne({ email });
     if (!user) {
-      return res.status(404).json({ success: false, message: 'User not found' });
+      return res.status(404).json({ 
+        success: false, 
+        message: 'ไม่พบผู้ใช้ที่มีอีเมลนี้' 
+      });
     }
 
+    // ตรวจสอบสถานะ userstatus (ใช้ boolean)
+    if (!user.userstatus) { // ถ้า userstatus เป็น false
+      return res.status(403).json({
+        success: false,
+        message: 'บัญชีของคุณถูกระงับการใช้งาน กรุณาติดต่อเจ้าหน้าที่',
+        email: user.email
+      });
+    }
+
+    // สร้าง reset token
     const resetToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
       expiresIn: '24h',
     });
 
-    const resetLink = `http://localhost:5173/reset-password?token=${resetToken}`;
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`; // ใช้ env variable แทน hardcoded URL
 
+    // ตรวจสอบ transporter
     if (!transporter) {
       return res.status(500).json({
         success: false,
-        message: 'Email service is not configured',
+        message: 'ไม่สามารถกำหนดค่า Email service ได้',
         error: 'Email credentials are missing',
       });
     }
 
+    // ส่งอีเมล
     await transporter.sendMail({
       from: `"Your App Name" <${process.env.EMAIL_USER}>`,
       to: user.email,
-      subject: 'Password Reset Request',
+      subject: 'คำขอรีเซ็ตรหัสผ่าน',
       html: `
-        <h3>Password Reset Request</h3>
-        <p>Hello ${user.firstName},</p>
-        <p>You requested a password reset. Click the link below to reset your password:</p>
-        <p><a href="${resetLink}">Reset Password</a></p>
-        <p>This link will expire in 24 hours.</p>
-        <p>If you didn't request this, please ignore this email.</p>
-        <p>Best regards,<br>Your App Team</p>
+        <h3>คำขอรีเซ็ตรหัสผ่าน</h3>
+        <p>สวัสดี ${user.firstName},</p>
+        <p>คุณได้ร้องขอการรีเซ็ตรหัสผ่าน คลิกที่ลิงก์ด้านล่างเพื่อรีเซ็ตรหัสผ่าน:</p>
+        <p><a href="${resetLink}">รีเซ็ตรหัสผ่าน</a></p>
+        <p>ลิงก์นี้จะหมดอายุใน 24 ชั่วโมง</p>
+        <p>หากคุณไม่ได้ร้องขอ กรุณาเพิกเฉยต่ออีเมลนี้</p>
+        <p>ด้วยความเคารพ,<br>ทีมงาน Your App</p>
       `,
     });
 
     return res.status(200).json({
       success: true,
-      message: 'Reset link sent to your email',
+      message: 'ลิงก์รีเซ็ตรหัสผ่านได้ถูกส่งไปยังอีเมลของคุณแล้ว',
     });
   } catch (error) {
-    console.error('Email sending error:', error);
+    console.error('ข้อผิดพลาดในการส่งอีเมล:', {
+      error: error.message,
+      stack: error.stack,
+      email: req.body.email,
+    });
     return res.status(500).json({
       success: false,
-      message: 'Internal Server Error',
-      error: error.message,
+      message: 'เกิดข้อผิดพลาดในเซิร์ฟเวอร์',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined,
     });
   }
 });

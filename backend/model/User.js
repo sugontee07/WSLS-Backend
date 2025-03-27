@@ -7,6 +7,7 @@ const userSchema = new mongoose.Schema({
   department: { type: String, required: true },
   employeeId: { type: String, required: true, unique: true },
   email: { type: String, required: true, unique: true },
+  userstatus: { type: Boolean, default: true }, 
   phoneNumber: {
     type: String,
     required: true,

@@ -51,18 +51,19 @@ router.get('/all', protect, isAdmin, async (req, res) => {
         role: user.role,
         phoneNumber: user.phoneNumber,
         profilePicture: fullProfilePic,
+        userstatus: user.userstatus ? 'true' : 'false', // เพิ่มฟิลด์ userstatus
         updated_at: user.updated_at
       };
     });
 
     res.status(200).json({
-      status: 'success',
+      success: true,
       message: 'Users retrieved successfully',
       data: usersWithFullUrl
     });
   } catch (error) {
-    console.error('Fetch users error:', error.stack);
-    res.status(500).json({ status: 'error', message: 'Server error' });
+    console.error('Error fetching users:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
   }
 });
 
@@ -314,48 +315,62 @@ router.put('/profile/:userId', protect, isAdmin, uploadProfile.single('profilePi
   }
 });
 
-// API ลบผู้ใช้ (เฉพาะ Admin)
-router.delete('/users/:userId', protect, isAdmin, async (req, res) => {
+router.put('/status/:employeeId', protect, isAdmin, async (req, res) => {
   try {
-    const userIdToDelete = req.params.userId;
-    const adminId = req.user.id;
+    const employeeIdToUpdate = req.params.employeeId;
+    const adminEmployeeId = req.user.employeeId;
+    const { userstatus } = req.body;
 
-    if (userIdToDelete === adminId) {
-      return res.status(403).json({
+    // ตรวจสอบ input
+    if (!userstatus || (userstatus !== 'true' && userstatus !== 'false')) {
+      return res.status(400).json({
         status: 'error',
-        message: 'Unauthorized: Cannot delete your own account'
+        message: 'กรุณาระบุ userstatus เป็น "true" หรือ "false"'
       });
     }
 
-    const user = await User.findById(userIdToDelete);
+    // ค้นหาผู้ใช้
+    const user = await User.findOne({ employeeId: employeeIdToUpdate });
     if (!user) {
-      return res.status(404).json({ status: 'error', message: 'User not found' });
+      return res.status(404).json({ 
+        status: 'error', 
+        message: 'ไม่พบผู้ใช้' 
+      });
     }
 
-    if (user.profilePicture) {
-      const imagePath = path.join(
-        process.cwd(),
-        user.profilePicture.replace(/^\/uploads\//, 'uploads/')
-      );
-      try {
-        await fs.unlink(imagePath);
-        console.log(`Deleted profile picture: ${imagePath}`);
-      } catch (err) {
-        console.error(`Error deleting profile picture: ${err.message}`);
-      }
+    // ตรวจสอบสิทธิ์
+    if (employeeIdToUpdate === adminEmployeeId) {
+      return res.status(403).json({
+        status: 'error',
+        message: 'ไม่ได้รับอนุญาต: ไม่สามารถแก้ไขสถานะบัญชีของตัวเองได้'
+      });
     }
 
-    await User.findByIdAndDelete(userIdToDelete);
+    // อัปเดตสถานะ
+    user.userstatus = userstatus === 'true'; // แปลง string เป็น boolean
+    await user.save();
 
+    // ส่ง response
     res.status(200).json({
       status: 'success',
-      message: 'User deleted successfully',
-      data: { id: userIdToDelete }
+      message: `อัปเดตสถานะผู้ใช้สำเร็จ บัญชีนี้ขณะนี้ ${user.userstatus ? 'ใช้งานได้' : 'ไม่สามารถใช้งานได้'}`,
+      data: { 
+        employeeId: user.employeeId,
+        userstatus: user.userstatus
+      }
     });
   } catch (error) {
-    console.error('Delete user error:', error.stack);
-    res.status(500).json({ status: 'error', message: 'Server error' });
+    // ปรับปรุง error handling
+    console.error('ข้อผิดพลาดในการอัปเดตสถานะผู้ใช้:', {
+      error: error.message,
+      stack: error.stack,
+      employeeId: req.params.employeeId
+    });
+    res.status(500).json({ 
+      status: 'error', 
+      message: 'ข้อผิดพลาดของเซิร์ฟเวอร์',
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
-
 export default router;

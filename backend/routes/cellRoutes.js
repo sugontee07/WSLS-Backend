@@ -205,6 +205,9 @@ router.put("/update-status", protect, async (req, res) => {
       cell.status = status;
     }
 
+    // อัปเดต updatedAt ด้วยวันที่ปัจจุบัน (ถ้า schema ไม่มี timestamps)
+    cell.updatedAt = new Date();
+
     await cell.save();
 
     res.status(200).json({
@@ -217,6 +220,7 @@ router.put("/update-status", protect, async (req, res) => {
         divisionType: cell.divisionType,
         subCellsA: cell.subCellsA,
         subCellsB: cell.subCellsB,
+        updatedAt: cell.updatedAt, // เพิ่ม updatedAt ใน response เพื่อให้เห็นวันที่ล่าสุด
       },
     });
   } catch (error) {
@@ -235,13 +239,11 @@ router.get("/cellsAll", async (req, res) => {
 
     // ดึงข้อมูล Cells และแปลงเป็น plain JavaScript object ด้วย .lean()
     const cells = await Cell.find(query).lean();
-    console.log("Raw cells data:", cells); // เพิ่ม log เพื่อตรวจสอบข้อมูลดิบ
 
     // ปรับแต่งข้อมูลใน cells
     const formattedCells = cells.map(cell => {
       // ฟังก์ชันสำหรับแปลงวันที่
       const formatProduct = (product) => {
-        console.log("Raw product data:", product); // เพิ่ม log เพื่อตรวจสอบ product
         return {
           product: {
             productId: product.product.productId,
@@ -277,208 +279,6 @@ router.get("/cellsAll", async (req, res) => {
   } catch (error) {
     console.error("Failed to fetch cells:", error);
     res.status(500).json({ success: false, error: "Failed to fetch cells" });
-  }
-});
-
-// Route: เพิ่มสินค้าจากบิลไปยัง Cell ที่เลือก (แยกสินค้าไปยัง location ต่าง ๆ ได้)
-router.post("/assign-products-from-bill", async (req, res) => {
-  try {
-    const { billNumber, assignments } = req.body;
-
-    // ตรวจสอบ input
-    if (!billNumber || !assignments || !Array.isArray(assignments) || assignments.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing required fields: billNumber and assignments (array) are required",
-      });
-    }
-
-    // ตรวจสอบว่า assignments มีข้อมูลครบถ้วน
-    for (const assignment of assignments) {
-      if (!assignment.productId || !assignment.cellId) {
-        return res.status(400).json({
-          success: false,
-          error: "Each assignment must include productId and cellId",
-        });
-      }
-    }
-
-    // ดึงข้อมูลบิล
-    const Bill = mongoose.model("Bill");
-    const bill = await Bill.findOne({ billNumber });
-    if (!bill) {
-      return res.status(404).json({ success: false, error: "Bill not found" });
-    }
-
-    const items = bill.items;
-    if (!items || items.length === 0) {
-      return res.status(400).json({ success: false, error: "No items found in the bill" });
-    }
-
-    // ตรวจสอบ inDate ของ bill
-    if (!bill.inDate) {
-      return res.status(400).json({
-        success: false,
-        error: "Bill is missing required field: inDate",
-      });
-    }
-
-    // เก็บผลลัพธ์การ assign
-    const assignmentResults = [];
-    const cellsToUpdate = new Map();
-
-    // วนลูปเพื่อ assign สินค้าแต่ละตัว
-    for (const assignment of assignments) {
-      const { productId, cellId, subCell } = assignment;
-
-      // ตรวจสอบว่าสินค้าอยู่ในบิลหรือไม่
-      const item = items.find(i => i.product.productId === productId);
-      if (!item) {
-        return res.status(400).json({
-          success: false,
-          error: `Product with ID ${productId} not found in bill ${billNumber}`,
-        });
-      }
-
-      // ตรวจสอบข้อมูลที่จำเป็น
-      if (!item.product.type || !item.product.name) {
-        return res.status(400).json({
-          success: false,
-          error: `Product with ID ${productId} is missing required fields: type or name`,
-        });
-      }
-
-      // ตรวจสอบ endDate ของ item
-      if (!item.endDate) {
-        return res.status(400).json({
-          success: false,
-          error: `Product with ID ${productId} is missing required field: endDate`,
-        });
-      }
-
-      // ตรวจสอบและแปลงวันที่
-      const inDate = new Date(bill.inDate);
-      const endDate = new Date(item.endDate);
-      if (isNaN(inDate.getTime()) || isNaN(endDate.getTime())) {
-        return res.status(400).json({
-          success: false,
-          error: "Invalid date format for inDate or endDate",
-        });
-      }
-
-      // ดึงข้อมูล Cell
-      let cell = cellsToUpdate.get(cellId);
-      if (!cell) {
-        cell = await Cell.findOne({ cellId });
-        if (!cell) {
-          return res.status(404).json({ success: false, error: `Cell ${cellId} not found` });
-        }
-        cellsToUpdate.set(cellId, cell);
-      }
-
-      // Handle "null" string as null
-      const effectiveSubCell = subCell === "null" ? null : subCell;
-
-      let targetStatus;
-      let targetProducts;
-
-      // ตรวจสอบว่าเป็น subCell หรือ Cell หลัก
-      if (effectiveSubCell) {
-        if (cell.divisionType !== "dual") {
-          return res.status(400).json({ success: false, error: `Cell ${cellId} is not divided into subCells` });
-        }
-
-        if (effectiveSubCell === "subCellsA") {
-          targetStatus = cell.subCellsA.status;
-          targetProducts = cell.subCellsA.products || [];
-        } else if (effectiveSubCell === "subCellsB") {
-          targetStatus = cell.subCellsB.status;
-          targetProducts = cell.subCellsB.products || [];
-        } else {
-          return res.status(400).json({
-            success: false,
-            error: "Invalid subCell value, must be 'subCellsA' or 'subCellsB'",
-          });
-        }
-      } else {
-        if (cell.divisionType === "dual") {
-          return res.status(400).json({
-            success: false,
-            error: "Cannot assign products to a dual-divided cell directly; specify subCell instead",
-          });
-        }
-        targetStatus = cell.status;
-        targetProducts = cell.products || [];
-      }
-
-      // ตรวจสอบว่า Cell หรือ subCell พร้อมรับสินค้าหรือไม่ (status ต้องเป็น 1)
-      if (targetStatus !== 1) {
-        return res.status(400).json({
-          success: false,
-          error: `Selected cell or subCell ${cellId}${effectiveSubCell ? `-${effectiveSubCell}` : ''} is not available (status must be 1)`,
-        });
-      }
-
-      // ตรวจสอบ productId ซ้ำและรวม quantity
-      const existingProduct = targetProducts.find(p => p.product.productId === item.product.productId);
-      if (existingProduct) {
-        existingProduct.quantity += item.quantity;
-      } else {
-        // เพิ่มสินค้าลงใน targetProducts ด้วยโครงสร้างใหม่
-        targetProducts.push({
-          product: {
-            productId: item.product.productId,
-            type: item.product.type,
-            name: item.product.name,
-            image: item.product.image || null,
-          },
-          quantity: item.quantity,
-          endDate: endDate,
-          inDate: inDate,
-        });
-      }
-
-      // บันทึกสินค้าลงใน Cell หรือ subCell โดยไม่เปลี่ยน status
-      if (effectiveSubCell === "subCellsA") {
-        cell.subCellsA.products = targetProducts;
-      } else if (effectiveSubCell === "subCellsB") {
-        cell.subCellsB.products = targetProducts;
-      } else {
-        cell.products = targetProducts;
-      }
-
-      // Debug log
-      console.log(`Assigned product ${productId} to Cell ${cellId}${effectiveSubCell ? `-${effectiveSubCell}` : ''}`);
-
-      // เก็บผลลัพธ์สำหรับสินค้านี้
-      assignmentResults.push({
-        product: {
-          productId: item.product.productId,
-          type: item.product.type,
-          name: item.product.name,
-          image: item.product.image || null,
-        },
-        quantity: item.quantity,
-        endDate: endDate.toISOString().split("T")[0], // แปลงเป็น "YYYY-MM-DD"
-        inDate: inDate.toISOString().split("T")[0], // เพิ่ม inDate ในผลลัพธ์
-      });
-    }
-
-    // บันทึกการเปลี่ยนแปลงทั้งหมดใน Cell
-    await Promise.all([...cellsToUpdate.values()].map(async (cell) => {
-      console.log(`Before saving Cell ${cell.cellId}:`, cell.products);
-      await cell.save();
-      console.log(`After saving Cell ${cell.cellId}:`, (await Cell.findOne({ cellId: cell.cellId })).products);
-    }));
-
-    res.status(200).json({
-      success: true,
-      message: "Products assigned to cells successfully",
-      data: assignmentResults,
-    });
-  } catch (error) {
-    console.error("Failed to assign products from bill:", error);
-    res.status(500).json({ success: false, error: "Failed to assign products", details: error.message });
   }
 });
 
