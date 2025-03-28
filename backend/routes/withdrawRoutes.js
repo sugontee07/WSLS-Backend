@@ -207,8 +207,9 @@ router.get("/exportpdfs", protect, async (req, res) => {
     }
 
     console.log("User ID:", req.user._id);
-    const exportPDFs = await ExportPdf.find({ createdBy: req.user._id });
-    console.log("Export PDFs:", exportPDFs);
+
+    // ดึงข้อมูล PDF ที่ผู้ใช้สร้าง
+    const exportPDFs = await ExportPdf.find({ createdBy: req.user._id }).lean();
 
     if (exportPDFs.length === 0) {
       return res.status(200).json({
@@ -218,10 +219,66 @@ router.get("/exportpdfs", protect, async (req, res) => {
       });
     }
 
+    // ดึงข้อมูลเพิ่มเติมจาก ExportBill และจัดรูปแบบ
+    const pdfData = await Promise.all(
+      exportPDFs.map(async (pdf) => {
+        // ดึงข้อมูลใบเบิกที่ตรงกับ billNumber ของ PDF
+        const bill = await ExportBill.findOne({ billNumber: pdf.billNumber }).lean();
+
+        if (!bill) {
+          // กรณีไม่พบ bill ที่สัมพันธ์กับ PDF
+          return {
+            billNumber: pdf.billNumber,
+            withdrawDate: null,
+            withdrawTime: null,
+            items: [],
+            pdfUrl: pdf.pdfUrl,
+          };
+        }
+
+        // แปลงวันที่และเวลา
+        const createdAt = new Date(bill.createdAt);
+        const withdrawDate = createdAt.toLocaleDateString("th-TH", {
+          day: "2-digit",
+          month: "long",
+          year: "numeric",
+        });
+        const withdrawTime = createdAt.toLocaleTimeString("th-TH", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        });
+
+        // จัดกลุ่มรายการสินค้า
+        const groupedItems = bill.items.reduce((map, item) => {
+          const productId = item.product.productId;
+          const existing = map.get(productId);
+          if (existing) {
+            existing.quantity += item.quantity;
+          } else {
+            map.set(productId, { name: item.product.name, quantity: item.quantity });
+          }
+          return map;
+        }, new Map());
+
+        const itemsList = Array.from(groupedItems.values()).map(
+          (item) => `${item.name} [${item.quantity}]`
+        );
+
+        return {
+          billNumber: pdf.billNumber,
+          withdrawDate,
+          withdrawTime,
+          items: itemsList,
+          pdfUrl: pdf.pdfUrl, // URL ของ PDF
+        };
+      })
+    );
+
     res.status(200).json({
       success: true,
       message: "ดึงข้อมูล PDF ของผู้ใช้สำเร็จ",
-      data: exportPDFs,
+      data: pdfData,
     });
   } catch (error) {
     console.error("Error in GET /exportpdfs route:", error);
@@ -366,5 +423,6 @@ router.post("/withdraw", protect, async (req, res) => {
     });
   }
 });
+
 
 export default router;
