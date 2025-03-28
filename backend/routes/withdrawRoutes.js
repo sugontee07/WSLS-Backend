@@ -1,204 +1,312 @@
 import express from "express";
 import path from "path";
+import fs from "fs/promises";
 import { fileURLToPath } from "url";
-import pdfkit from "pdfkit";
-import mongoose from "mongoose";
-import { ImportBill, ExportBill, generateUniqueBillNumber } from "../model/Bill.js"; 
+import PdfMake from "pdfmake";
+import jwt from "jsonwebtoken";
 import Cell from "../model/Cell.js";
-import { protect } from "../middleware/auth.js";
+import { ImportBill, ExportBill, generateUniqueBillNumber } from "../model/Bill.js";
+import { User } from "../model/User.js";
+import ExportPdf from "../model/ExportPdf.js"; // โมเดล ExportPdf
 
-const router = express.Router();
-const printer = pdfkit;
-
-// ฟังก์ชันสำหรับแก้ไขปัญหา __dirname ใน ES Modules
+// หา __dirname ใน ES Module
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Middleware สำหรับตรวจสอบข้อมูลการเบิกสินค้า
-const validateWithdrawProduct = async (req, res, next) => {
-  console.log("Validating withdrawals:", req.body); // Debug
-  if (!req.body) {
-    return res.status(400).json({ success: false, error: "Request body is missing" });
-  }
-
-  const { withdrawals } = req.body;
-
-  if (!withdrawals || !Array.isArray(withdrawals) || withdrawals.length === 0) {
-    return res.status(400).json({ success: false, error: "Withdrawals must be a non-empty array" });
-  }
-
-  for (const withdrawal of withdrawals) {
-    const { cellId, productId, quantity } = withdrawal;
-
-    if (!cellId || !productId || !quantity) {
-      return res.status(400).json({
-        success: false,
-        error: "Each withdrawal must have cellId, productId, and quantity",
-      });
-    }
-
-    if (typeof quantity !== "number" || quantity < 1) {
-      return res.status(400).json({
-        success: false,
-        error: "Quantity must be a number greater than 0",
-      });
-    }
-
-    const cell = await Cell.findOne({ cellId });
-    if (!cell) {
-      return res.status(404).json({
-        success: false,
-        error: `Cell not found with cellId: ${cellId}`,
-      });
-    }
-  }
-
-  req.validatedWithdrawals = withdrawals;
-  next();
+// กำหนดฟอนต์สำหรับ pdfmake
+const fonts = {
+  THSarabunNew: {
+    normal: path.join(__dirname, "../THSarabunNew/THSarabunNew.ttf"),
+    bold: path.join(__dirname, "../THSarabunNew/THSarabunNew Bold.ttf"),
+    italics: path.join(__dirname, "../THSarabunNew/THSarabunNew Italic.ttf"),
+    bolditalics: path.join(__dirname, "../THSarabunNew/THSarabunNew BoldItalic.ttf"),
+  },
 };
 
-// Route: เบิกสินค้า
-router.post("/withdraw", protect, validateWithdrawProduct, async (req, res) => {
+// สร้าง instance ของ pdfmake พร้อมฟอนต์
+const printer = new PdfMake(fonts);
+
+const router = express.Router();
+
+// ฟังก์ชัน protect
+export const protect = async (req, res, next) => {
+  let token;
+  if (req.headers.authorization && req.headers.authorization.startsWith("Bearer")) {
+    try {
+      token = req.headers.authorization.split(" ")[1];
+      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      req.user = await User.findById(decoded.id).select("-password");
+      next();
+    } catch (error) {
+      console.error("ไม่สามารถตรวจสอบ token ได้:", error);
+      res.status(401).json({ success: false, error: "ไม่ได้รับอนุญาต" });
+    }
+  }
+  if (!token) {
+    res.status(401).json({ success: false, error: "ไม่ได้รับอนุญาต ไม่มี token" });
+  }
+};
+
+// ฟังก์ชัน generatePDF
+const generatePDF = async (billNumber, user) => {
+  const bill = await ExportBill.findOne({ billNumber });
+  if (!bill) {
+    throw new Error(`ไม่พบบิลที่มีเลขที่ ${billNumber}`);
+  }
+
+  const groupedItems = new Map();
+  bill.items.forEach((item) => {
+    const productId = item.product.productId;
+    if (groupedItems.has(productId)) {
+      const existing = groupedItems.get(productId);
+      existing.quantity += item.quantity;
+    } else {
+      groupedItems.set(productId, {
+        name: item.product.name,
+        quantity: item.quantity,
+      });
+    }
+  });
+
+  const tableBody = [
+    [
+      { text: "รหัสสินค้า", style: "tableHeader", alignment: "center" },
+      { text: "รายการสินค้า", style: "tableHeader", alignment: "center" },
+      { text: "จำนวน", style: "tableHeader", alignment: "center" },
+    ],
+  ];
+
+  groupedItems.forEach((item, productId) => {
+    tableBody.push([
+      { text: productId, alignment: "center" },
+      { text: item.name, alignment: "center" },
+      { text: item.quantity.toString(), alignment: "center" },
+    ]);
+  });
+
+  const withdrawDate = bill.createdAt.toLocaleDateString("th-TH", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+
+  const withdrawTime = bill.createdAt.toLocaleTimeString("th-TH", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  const requesterName = `${user.firstName || "ไม่ระบุ"} ${user.lastName || "ไม่ระบุ"}`;
+  const employeeId = user.employeeId || "ไม่ระบุ";
+  const department = user.department || "ไม่ระบุ";
+
+  const docDefinition = {
+    pageSize: "A4",
+    pageMargins: [40, 60, 40, 60],
+    defaultStyle: {
+      font: "THSarabunNew",
+      fontSize: 14,
+    },
+    content: [
+      { text: "J.I.B.", style: "header", alignment: "center" },
+      { text: "ใบเบิกสินค้า", style: "subheader", alignment: "center" },
+      { text: "", margin: [0, 10] },
+      {
+        columns: [
+          [
+            { text: "สาขา: สำนักงานใหญ่", style: "info" },
+            { text: "เรื่อง: เบิกสินทรัพย์", style: "info" },
+          ],
+          [
+            { text: `เลขที่: ${billNumber}`, style: "info", alignment: "right" },
+            { text: `วันที่เบิกสินค้า: ${withdrawDate}`, style: "info", alignment: "right" },
+            { text: `เวลาเบิกสินค้า: ${withdrawTime} น.`, style: "info", alignment: "right" },
+          ],
+        ],
+      },
+      { text: "", margin: [0, 10] },
+      {
+        columns: [
+          [
+            { text: `รหัสพนักงาน: ${employeeId}`, style: "info" },
+            { text: `แผนก: ${department}`, style: "info" },
+            { text: `ผู้ขอเบิก: ${requesterName}`, style: "info" },
+          ],
+        ],
+        margin: [0, 10],
+      },
+      {
+        table: {
+          headerRows: 1,
+          widths: [100, "*", 100],
+          body: tableBody,
+        },
+        layout: {
+          hLineWidth: () => 1,
+          vLineWidth: () => 1,
+          hLineColor: () => "#000000",
+          vLineColor: () => "#000000",
+        },
+      },
+      {
+        columns: [
+          { text: "ผู้อนุมัติ .......................................", alignment: "left" },
+          { text: "ผู้เบิก .......................................", alignment: "right" },
+        ],
+        absolutePosition: { x: 40, y: 700 },
+      },
+      {
+        columns: [
+          { text: "วันที่ ......./........./........", alignment: "left" },
+          { text: "วันที่ ......./........./........", alignment: "right" },
+        ],
+        absolutePosition: { x: 40, y: 720 },
+      },
+    ],
+    styles: {
+      header: { fontSize: 20, bold: true },
+      subheader: { fontSize: 16, bold: true },
+      info: { fontSize: 14 },
+      tableHeader: { bold: true, fontSize: 14, fillColor: "#eeeeee" },
+    },
+  };
+
+  const pdfDoc = printer.createPdfKitDocument(docDefinition);
+  const chunks = [];
+
+  return new Promise((resolve, reject) => {
+    pdfDoc.on("data", (chunk) => chunks.push(chunk));
+    pdfDoc.on("end", async () => {
+      const pdfBuffer = Buffer.concat(chunks);
+      const uploadPath = path.join(__dirname, "../uploads/exports");
+      const timestamp = Date.now();
+      const fileName = `bill-${billNumber}-${timestamp}.pdf`;
+      const fullPath = path.join(uploadPath, fileName);
+
+      try {
+        await fs.mkdir(uploadPath, { recursive: true });
+        await fs.writeFile(fullPath, pdfBuffer);
+        console.log(`PDF saved to ${fullPath}`);
+        const pdfUrl = `/uploads/exports/${fileName}`;
+        resolve(pdfUrl);
+      } catch (error) {
+        reject(error);
+      }
+    });
+    pdfDoc.end();
+  });
+};
+
+router.get("/exportpdfs", protect, async (req, res) => {
   try {
-    console.log("Processing /withdraw request:", req.body); // Debug log
-    const withdrawals = req.validatedWithdrawals;
+    if (!req.user || !req.user._id) {
+      return res.status(400).json({
+        success: false,
+        error: "ไม่พบข้อมูลผู้ใช้งานในคำขอ",
+      });
+    }
 
+    console.log("User ID:", req.user._id);
+    const exportPDFs = await ExportPdf.find({ createdBy: req.user._id });
+    console.log("Export PDFs:", exportPDFs);
+
+    if (exportPDFs.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "คุณยังไม่เคยเบิกสินค้าหรือสร้าง PDF",
+        data: [],
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: "ดึงข้อมูล PDF ของผู้ใช้สำเร็จ",
+      data: exportPDFs,
+    });
+  } catch (error) {
+    console.error("Error in GET /exportpdfs route:", error);
+    res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการดึงข้อมูล PDF",
+      details: error.message,
+    });
+  }
+});
+
+// API เบิกสินค้าออกจาก Cell และเด้งไปหน้า PDF
+router.post("/withdraw", protect, async (req, res) => {
+  try {
+    const { withdrawals } = req.body;
     const withdrawResults = [];
-    const cellsToUpdate = new Map();
     const billItems = [];
-
     const billDate = new Date();
 
-    // วนลูปเพื่อจัดการการเบิกสินค้า
-    for (const { cellId, productId, quantity } of withdrawals) {
-      console.log(`Processing withdrawal: cellId=${cellId}, productId=${productId}, quantity=${quantity}`); // Debug log
+    const withdrawDate = new Date().toLocaleDateString("th-TH", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
 
-      const [mainCellId, subCellPart] =
-        cellId.split("-").length > 2
-          ? [cellId.split("-").slice(0, 2).join("-"), cellId.split("-")[2]]
-          : [cellId, null];
+    const withdrawTime = new Date().toLocaleTimeString("th-TH", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+    });
 
-      let cell = cellsToUpdate.get(mainCellId) || (await Cell.findOne({ cellId: mainCellId }));
-      if (!cell) {
-        console.log(`Cell not found: ${mainCellId}`); // Debug log
-        return res.status(404).json({ success: false, error: `ไม่พบ Cell ${mainCellId}` });
-      }
-
-      cellsToUpdate.set(mainCellId, cell);
-
-      let sourceProducts;
-      let sourceLocation;
-
-      if (subCellPart) {
-        if (cell.divisionType !== "dual") {
-          console.log(`Cell ${mainCellId} is not dual, cannot use subCell ${cellId}`); // Debug log
-          return res.status(400).json({
-            success: false,
-            error: `Cell ${mainCellId} ไม่ได้ถูกแบ่งเป็น subCell ไม่สามารถใช้ subCell ${cellId} ได้`,
-          });
-        }
-
-        if (subCellPart === "A") {
-          sourceProducts = cell.subCellsA?.products || [];
-          sourceLocation = "subCellsA";
-        } else if (subCellPart === "B") {
-          sourceProducts = cell.subCellsB?.products || [];
-          sourceLocation = "subCellsB";
-        } else {
-          console.log(`Invalid subCell part in ${cellId}, must be 'A' or 'B'`); // Debug log
-          return res.status(400).json({
-            success: false,
-            error: `ส่วนของ subCell ไม่ถูกต้องใน ${cellId} ต้องเป็น 'A' หรือ 'B'`,
-          });
-        }
-      } else {
-        if (cell.divisionType === "dual") {
-          console.log(`Cannot withdraw directly from dual cell ${cellId}, specify subCell`); // Debug log
-          return res.status(400).json({
-            success: false,
-            error: `ไม่สามารถเบิกสินค้าจาก Cell ที่ถูกแบ่งเป็น dual ได้โดยตรง ${cellId} ต้องระบุ subCell (เช่น ${cellId}-A)`,
-          });
-        }
-        sourceProducts = cell.products || [];
-        sourceLocation = "products";
-      }
-
-      // ตรวจสอบว่า sourceProducts เป็นอาร์เรย์
-      if (!Array.isArray(sourceProducts)) {
-        console.log(`Invalid data: sourceProducts in ${sourceLocation} of Cell ${cellId} is not an array`); // Debug log
-        return res.status(500).json({
-          success: false,
-          error: `ข้อมูลใน Cell ${cellId} ไม่ถูกต้อง: ${sourceLocation}.products ไม่ใช่อาร์เรย์`,
-        });
-      }
-
-      const product = sourceProducts.find((p) => {
-        // ตรวจสอบโครงสร้างของ p และ p.product
-        if (!p || !p.product || typeof p.product.productId !== "string") {
-          console.log(`Invalid product structure in ${sourceLocation} of Cell ${cellId}:`, p); // Debug log
-          return false;
-        }
-        return p.product.productId === productId;
+    if (!withdrawals || !Array.isArray(withdrawals) || withdrawals.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "กรุณาระบุข้อมูลการเบิกสินค้า (withdrawals) เป็น array",
       });
+    }
 
-      if (!product) {
-        console.log(`Product ${productId} not found in ${sourceLocation} of Cell ${cellId}`); // Debug log
+    // ตรวจสอบข้อมูลผู้ใช้
+    if (!req.user || !req.user._id) {
+      return res.status(400).json({
+        success: false,
+        error: "ไม่พบข้อมูลผู้ใช้งานในคำขอ",
+      });
+    }
+
+    const user = await User.findById(req.user._id).select("employeeId firstName lastName department");
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        error: "ไม่พบข้อมูลผู้ใช้งานในฐานข้อมูล",
+      });
+    }
+
+    // ประมวลผลการเบิกสินค้า
+    for (const { cellId, productId, quantity } of withdrawals) {
+      const cell = await Cell.findOne({ cellId });
+      if (!cell) {
         return res.status(404).json({
           success: false,
-          error: `ไม่พบสินค้า ${productId} ใน Cell ${cellId}`,
+          message: `ไม่พบ Cell ที่มีรหัส ${cellId}`,
         });
       }
 
-      // ตรวจสอบ quantity
-      if (typeof product.quantity !== "number") {
-        console.log(`Invalid quantity for product ${productId} in Cell ${cellId}: ${product.quantity}`); // Debug log
-        return res.status(500).json({
+      const productIndex = cell.products.findIndex(
+        (p) => p.product.productId === productId
+      );
+      if (productIndex === -1) {
+        return res.status(404).json({
           success: false,
-          error: `ข้อมูลใน Cell ${cellId} ไม่ถูกต้อง: จำนวนสินค้าไม่ใช่ตัวเลข`,
+          message: `ไม่พบสินค้า ${productId} ใน Cell ${cellId}`,
         });
       }
 
+      const product = cell.products[productIndex];
       if (product.quantity < quantity) {
-        console.log(`Insufficient quantity in Cell ${cellId}: available=${product.quantity}, requested=${quantity}`); // Debug log
         return res.status(400).json({
           success: false,
-          error: `จำนวนสินค้าใน Cell ${cellId} ไม่เพียงพอ มี: ${product.quantity}, ต้องการ: ${quantity}`,
+          message: `จำนวนสินค้าใน Cell ${cellId} ไม่เพียงพอ (มี ${product.quantity} ชิ้น)`,
         });
       }
 
-      // ตรวจสอบ endDate
-      if (!product.endDate || isNaN(new Date(product.endDate).getTime())) {
-        console.log(`Product ${productId} in Cell ${cellId} has invalid or missing endDate: ${product.endDate}`); // Debug log
-        return res.status(400).json({
-          success: false,
-          error: `สินค้า ${productId} ใน Cell ${cellId} ไม่มีข้อมูล endDate หรือ endDate ไม่ถูกต้อง`,
-        });
-      }
-
-      // ตรวจสอบ inDate
-      if (!product.inDate || isNaN(new Date(product.inDate).getTime())) {
-        console.log(`Product ${productId} in Cell ${cellId} has invalid or missing inDate: ${product.inDate}`); // Debug log
-        return res.status(400).json({
-          success: false,
-          error: `สินค้า ${productId} ใน Cell ${cellId} ไม่มีข้อมูล inDate หรือ inDate ไม่ถูกต้อง`,
-        });
-      }
-
-      // อัปเดตจำนวนสินค้า
       product.quantity -= quantity;
-
       if (product.quantity === 0) {
-        if (sourceLocation === "products") {
-          cell.products = cell.products.filter((p) => p.product.productId !== productId);
-        } else if (sourceLocation === "subCellsA") {
-          cell.subCellsA.products = cell.subCellsA.products.filter(
-            (p) => p.product.productId !== productId
-          );
-        } else if (sourceLocation === "subCellsB") {
-          cell.subCellsB.products = cell.subCellsB.products.filter(
-            (p) => p.product.productId !== productId
-          );
-        }
+        cell.products.splice(productIndex, 1);
       }
 
       billItems.push({
@@ -215,57 +323,45 @@ router.post("/withdraw", protect, validateWithdrawProduct, async (req, res) => {
         withdrawDate: billDate,
       });
 
-      withdrawResults.push({
-        cellId,
-        productId,
-        quantity,
-      });
+      withdrawResults.push({ cellId, productId, quantity });
+      await cell.save();
     }
 
-    // สร้างบิลใหม่
-    const billNumber = await generateUniqueBillNumber(); // เพิ่มการสร้าง billNumber
-    const newBill = new ExportBill({ // เปลี่ยนจาก Bill เป็น ExportBill
-      billNumber, // ใช้ billNumber ที่สร้างจาก generateUniqueBillNumber
+    // สร้างบิลการเบิกสินค้า
+    const billNumber = await generateUniqueBillNumber();
+    const newBill = new ExportBill({
+      billNumber,
       items: billItems,
       type: "out",
+      createdAt: billDate,
+      createdBy: req.user._id,
     });
+    await newBill.save();
 
-    // บันทึกบิลและอัปเดต Cell
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    try {
-      await newBill.save({ session });
-      await Promise.all([...cellsToUpdate.values()].map((cell) => cell.save({ session })));
-      await session.commitTransaction();
-    } catch (error) {
-      await session.abortTransaction();
-      console.error("Transaction failed:", error);
-      throw error;
-    } finally {
-      session.endSession();
-    }
+    // สร้าง PDF และบันทึก URL
+    const pdfUrl = await generatePDF(billNumber, user);
+    const exportPdf = new ExportPdf({
+      billNumber,
+      pdfUrl,
+      createdBy: req.user._id,
+    });
+    await exportPdf.save();
 
-    console.log(`Withdrawal successful: billNumber=${newBill.billNumber}`); // Debug log
-
-    // ส่งผลลัพธ์กลับ
+    // ส่ง response พร้อม URL ของ PDF
     res.status(200).json({
       success: true,
-      message: "เบิกสินค้าสำเร็จ",
+      message: "เบิกสินค้าและสร้าง PDF เรียบร้อย",
       data: {
-        bill: {
-          billNumber: newBill.billNumber,
-          billDate: billDate.toISOString().split("T")[0],
-          items: newBill.items,
-          type: newBill.type,
-        },
-        withdrawals: withdrawResults,
+        billNumber,
+        withdrawResults,
+        pdfUrl, // ส่ง URL ของ PDF กลับไป
       },
     });
   } catch (error) {
-    console.error("Error in /withdraw route:", error); // Log the error
+    console.error("Error in /withdraw route:", error);
     res.status(500).json({
       success: false,
-      error: "ไม่สามารถเบิกสินค้าได้",
+      message: "เกิดข้อผิดพลาดในการเบิกสินค้า",
       details: error.message,
     });
   }

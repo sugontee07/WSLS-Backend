@@ -129,7 +129,7 @@ billSchema.pre("save", function (next) {
 
 // สร้างสองโมเดลสำหรับสองคอลเลกชัน
 const ImportBill = mongoose.model("ImportBill", billSchema, "importbills"); // สำหรับ type: "in"
-const ExportBill = mongoose.model("ExportBill", billSchema, "billexports"); // สำหรับ type: "out"
+const ExportBill = mongoose.model("ExportBill", billSchema, "exporbills"); // สำหรับ type: "out"
 
 // ส่งออกทั้งโมเดลและฟังก์ชัน
 export { ImportBill, ExportBill, generateUniqueBillNumber };
