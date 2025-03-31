@@ -1,11 +1,165 @@
 import express from "express";
-import { ImportBill, ExportBill, generateUniqueBillNumber } from "../model/Bill.js"; // นำเข้า generateUniqueBillNumber
+import { ImportBill, ExportBill, generateUniqueBillNumber } from "../model/Bill.js";
 import Product from "../model/Product.js";
 import { protect, isAdmin } from "../middleware/auth.js";
+import { fileURLToPath } from 'url';
+import path from 'path';
+import PdfMake from 'pdfmake';
+import fs from 'fs/promises';
+import bwipjs from 'bwip-js';
+import ImpostPdf from "../model/ImpostPdf.js";
 
 const router = express.Router();
 
-// Middleware สำหรับตรวจสอบข้อมูลบิล
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// กำหนดฟอนต์สำหรับ pdfmake
+const fonts = {
+  THSarabunNew: {
+    normal: path.join(__dirname, "../THSarabunNew/THSarabunNew.ttf"),
+    bold: path.join(__dirname, "../THSarabunNew/THSarabunNew Bold.ttf"),
+    italics: path.join(__dirname, "../THSarabunNew/THSarabunNew Italic.ttf"),
+    bolditalics: path.join(__dirname, "../THSarabunNew/THSarabunNew BoldItalic.ttf"),
+  },
+};
+
+const printer = new PdfMake(fonts);
+
+// ฟังก์ชันสร้างบาร์โค้ด
+const generateBarcode = async (text) => {
+  try {
+    const buffer = await bwipjs.toBuffer({
+      bcid: 'code128',
+      text: text,
+      scale: 2,
+      height: 10,
+      includetext: false,
+    });
+    return `data:image/png;base64,${buffer.toString('base64')}`;
+  } catch (error) {
+    console.error('Error generating barcode:', error);
+    throw error;
+  }
+};
+
+// ฟังก์ชันสร้าง PDF
+const generatePDF = async (billNumber, items, user) => {
+  if (!user || !user._id) {
+    throw new Error("ไม่พบข้อมูลผู้ใช้สำหรับสร้าง PDF");
+  }
+
+  const barcodeImage = await generateBarcode(billNumber);
+
+  const tableBody = [
+    [
+      { text: "รหัสสินค้า", style: "tableHeader", alignment: "center" },
+      { text: "รายการสินค้า", style: "tableHeader", alignment: "center" },
+      { text: "จำนวน", style: "tableHeader", alignment: "center" },
+      { text: "วันหมดอายุ", style: "tableHeader", alignment: "center" },
+    ],
+    ...items.map(item => [
+      { text: item.product.productId, alignment: "center" },
+      { text: item.product.name, alignment: "center" },
+      { text: item.quantity.toString(), alignment: "center" },
+      { text: item.product.endDate.toLocaleDateString("th-TH"), alignment: "center" },
+    ]),
+  ];
+
+  const inDate = new Date().toLocaleDateString("th-TH", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+
+  const requesterName = `${user.firstName || "ไม่ระบุ"} ${user.lastName || "ไม่ระบุ"}`;
+  const employeeId = user.employeeId || "ไม่ระบุ";
+  const department = user.department || "ไม่ระบุ";
+
+  const docDefinition = {
+    pageSize: "A4",
+    pageMargins: [40, 60, 40, 60],
+    defaultStyle: {
+      font: "THSarabunNew",
+      fontSize: 14,
+    },
+    content: [
+      { image: barcodeImage, width: 100, absolutePosition: { x: 450, y: 20 } },
+      { text: "J.I.B.", style: "header", alignment: "center" },
+      { text: "ใบนำเข้าสินค้า", style: "subheader", alignment: "center" },
+      { text: "", margin: [0, 10] },
+      {
+        columns: [
+          [
+            { text: "สาขา: สำนักงานใหญ่", style: "info" },
+            { text: "เรื่อง: นำเข้าสินทรัพย์", style: "info" },
+          ],
+          [
+            { text: `เลขที่: ${billNumber}`, style: "info", alignment: "right" },
+            { text: `วันที่นำเข้า: ${inDate}`, style: "info", alignment: "right" },
+          ],
+        ],
+      },
+      { text: "", margin: [0, 10] },
+      {
+      },
+      {
+        table: {
+          headerRows: 1,
+          widths: [100, "*", 80, 100],
+          body: tableBody,
+        },
+        layout: {
+          hLineWidth: () => 1,
+          vLineWidth: () => 1,
+          hLineColor: () => "#000000",
+          vLineColor: () => "#000000",
+        },
+      },
+    ],
+    styles: {
+      header: { fontSize: 20, bold: true },
+      subheader: { fontSize: 16, bold: true },
+      info: { fontSize: 14 },
+      tableHeader: { bold: true, fontSize: 14, fillColor: "#eeeeee" },
+    },
+  };
+
+  const pdfDoc = printer.createPdfKitDocument(docDefinition);
+  const chunks = [];
+
+  return new Promise(async (resolve, reject) => {
+    pdfDoc.on("data", (chunk) => chunks.push(chunk));
+    pdfDoc.on("end", async () => {
+      const pdfBuffer = Buffer.concat(chunks);
+      const uploadPath = path.join(__dirname, "../uploads/imports");
+      const timestamp = Date.now();
+      const fileName = `import-bill-${billNumber}-${timestamp}.pdf`;
+      const fullPath = path.join(uploadPath, fileName);
+
+      try {
+        await fs.mkdir(uploadPath, { recursive: true });
+        await fs.writeFile(fullPath, pdfBuffer);
+        const pdfUrl = `/uploads/imports/${fileName}`;
+
+        // บันทึกข้อมูล PDF ลงฐานข้อมูล
+        const pdfRecord = new ImpostPdf({
+          billNumber,
+          pdfUrl,
+          userId: user._id
+        });
+        await pdfRecord.save();
+
+        resolve(pdfUrl);
+      } catch (error) {
+        reject(error);
+      }
+    });
+    pdfDoc.end();
+  });
+};
+
+// Middleware validateBill
 const validateBill = async (req, res, next) => {
   if (!req.body) {
     return res.status(400).json({ success: false, error: "ไม่พบข้อมูลในคำขอ" });
@@ -51,9 +205,78 @@ const validateBill = async (req, res, next) => {
   next();
 };
 
-// เส้นทาง: สร้างบิลใหม่ (สำหรับ type: "in" เท่านั้น)
-router.post("/create", validateBill, async (req, res) => {
+// เส้นทาง: ดึงข้อมูล Impost PDFs ของผู้ใช้ที่ล็อกอิน
+router.get("/impostpdfs", protect, async (req, res) => {
   try {
+    // ตรวจสอบว่ามี req.user หรือไม่
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({
+        success: false,
+        error: "ไม่ได้รับอนุญาต",
+      });
+    }
+
+    // ดึงข้อมูล Impost PDFs ที่สร้างโดยผู้ใช้ที่ล็อกอิน
+    const impostPdfs = await ImpostPdf.find({ userId: req.user._id }).populate('userId', 'firstName lastName');
+
+    // ดึงข้อมูลบิลนำเข้าที่เกี่ยวข้อง
+    const billNumbers = impostPdfs.map(pdf => pdf.billNumber);
+    const importBills = await ImportBill.find({ billNumber: { $in: billNumbers } });
+
+    // จัดรูปแบบผลลัพธ์
+    const result = impostPdfs.map(pdf => {
+      const bill = importBills.find(b => b.billNumber === pdf.billNumber);
+
+      // ถ้าไม่พบ bill ให้ข้าม
+      if (!bill) {
+        return null;
+      }
+
+      // จัดรูปแบบวันที่และเวลา
+      const createdAt = new Date(bill.createdAt);
+      const withdrawDate = createdAt.toLocaleDateString('th-TH', {
+        day: '2-digit',
+        month: 'long',
+        year: 'numeric'
+      });
+      const withdrawTime = createdAt.toLocaleTimeString('th-TH', {
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+
+      // จัดรูปแบบ items
+      const items = bill.items.map(item => {
+        const productName = item.product.name || 'ไม่ระบุ';
+        const quantity = item.quantity || 0;
+        return `${productName} [${quantity}]`;
+      });
+
+      return {
+        billNumber: pdf.billNumber,
+        withdrawDate: withdrawDate, // วันที่นำเข้า
+        withdrawTime: withdrawTime, // เวลานำเข้า
+        items: items, // รายการสินค้าในรูปแบบ "ชื่อสินค้า [จำนวน]"
+        pdfUrl: pdf.pdfUrl // URL ของ PDF
+      };
+    }).filter(item => item !== null); // กรองข้อมูลที่ไม่พบ bill ออก
+
+    res.status(200).json({
+      success: true,
+      data: result
+    });
+  } catch (error) {
+    console.error("ไม่สามารถดึงข้อมูล Impost PDFs ได้:", error);
+    res.status(500).json({ success: false, error: "ไม่สามารถดึงข้อมูล Impost PDFs ได้", details: error.message });
+  }
+});
+
+// เส้นทาง: สร้างบิลใหม่ (ปรับปรุงให้มี PDF)
+router.post("/create", protect, validateBill, async (req, res) => {
+  try {
+    if (!req.user || !req.user._id) {
+      return res.status(401).json({ success: false, error: "ไม่พบข้อมูลผู้ใช้" });
+    }
+
     const { items } = req.body;
 
     const updatedItems = [];
@@ -73,24 +296,24 @@ router.post("/create", validateBill, async (req, res) => {
           type: product.type,
           image: product.image || "",
           endDate: new Date(item.endDate),
-          inDate: new Date(), // เพิ่มวันที่นำเข้า
+          inDate: new Date(),
         },
         quantity: item.quantity,
       });
     }
 
-    console.log("รายการที่อัปเดต:", JSON.stringify(updatedItems, null, 2));
-
-    // สร้าง billNumber ที่ไม่ซ้ำกัน
     const billNumber = await generateUniqueBillNumber();
 
     const newBill = new ImportBill({
-      billNumber, // ใช้ billNumber ที่สร้างจาก generateUniqueBillNumber
+      billNumber,
       items: updatedItems,
       type: "in",
     });
 
     await newBill.save();
+
+    // สร้าง PDF
+    const pdfUrl = await generatePDF(billNumber, updatedItems, req.user);
 
     res.status(201).json({
       success: true,
@@ -111,6 +334,7 @@ router.post("/create", validateBill, async (req, res) => {
         type: newBill.type,
         createdAt: newBill.createdAt,
         updatedAt: newBill.updatedAt,
+        pdfUrl: pdfUrl
       },
     });
   } catch (error) {
@@ -119,36 +343,44 @@ router.post("/create", validateBill, async (req, res) => {
   }
 });
 
-// เส้นทาง: ดึงข้อมูลบิลทั้งหมด
+
+
+// เส้นทาง: ดึงข้อมูลบิลทั้งหมด (เพิ่ม pdfUrl)
 router.get("/allBills", async (req, res) => {
   try {
-    // ดึงบิลจากทั้งสองคอลเลกชัน
     const importBills = await ImportBill.find();
     const exportBills = await ExportBill.find();
-    const bills = [...importBills, ...exportBills]; // รวมผลลัพธ์
+    const bills = [...importBills, ...exportBills];
+
+    // ดึงข้อมูล PDF ที่เกี่ยวข้อง
+    const pdfs = await ImpostPdf.find({ billNumber: { $in: bills.map(b => b.billNumber) } });
 
     res.status(200).json({
       success: true,
-      data: bills.map(bill => ({
-        billNumber: bill.billNumber,
-        items: bill.items.map(item => ({
-          cellId: item.cellId || null,
-          product: {
-            productId: item.product.productId,
-            type: item.product.type,
-            name: item.product.name,
-            image: item.product.image || null,
-            endDate: item.product.endDate,
-            inDate: item.product.inDate,
-          },
-          quantity: item.quantity,
-          withdrawDate: item.withdrawDate || null,
-        })),
-        totalItems: bill.totalItems,
-        type: bill.type,
-        createdAt: bill.createdAt,
-        updatedAt: bill.updatedAt,
-      })),
+      data: bills.map(bill => {
+        const pdf = pdfs.find(p => p.billNumber === bill.billNumber);
+        return {
+          billNumber: bill.billNumber,
+          items: bill.items.map(item => ({
+            cellId: item.cellId || null,
+            product: {
+              productId: item.product.productId,
+              type: item.product.type,
+              name: item.product.name,
+              image: item.product.image || null,
+              endDate: item.product.endDate,
+              inDate: item.product.inDate,
+            },
+            quantity: item.quantity,
+            withdrawDate: item.withdrawDate || null,
+          })),
+          totalItems: bill.totalItems,
+          type: bill.type,
+          createdAt: bill.createdAt,
+          updatedAt: bill.updatedAt,
+          pdfUrl: pdf?.pdfUrl || null
+        };
+      }),
     });
   } catch (error) {
     console.error("ไม่สามารถดึงข้อมูลบิลได้:", error);
@@ -156,7 +388,7 @@ router.get("/allBills", async (req, res) => {
   }
 });
 
-// เส้นทาง: ดึงข้อมูลบิลตาม billNumber
+// เส้นทาง: ดึงข้อมูลบิลตาม billNumber (เพิ่ม pdfUrl)
 router.get("/billNumber/:billNumber", protect, async (req, res) => {
   try {
     const billNumber = req.params.billNumber;
@@ -167,15 +399,15 @@ router.get("/billNumber/:billNumber", protect, async (req, res) => {
       });
     }
 
-    // ตรวจสอบเฉพาะ ImportBill
     const bill = await ImportBill.findOne({ billNumber });
-
     if (!bill) {
       return res.status(404).json({
         success: false,
         error: `ไม่พบบิลที่มี billNumber: ${billNumber}`,
       });
     }
+
+    const pdf = await ImpostPdf.findOne({ billNumber });
 
     res.status(200).json({
       success: true,
@@ -198,6 +430,7 @@ router.get("/billNumber/:billNumber", protect, async (req, res) => {
         type: bill.type,
         createdAt: bill.createdAt,
         updatedAt: bill.updatedAt,
+        pdfUrl: pdf?.pdfUrl || null
       },
     });
   } catch (error) {
