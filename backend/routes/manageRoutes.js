@@ -2,6 +2,7 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { protect, isAdmin } from '../middleware/auth.js';
 import Cell from "../model/Cell.js"; 
+import ImpostPdf from "../model/ImpostPdf.js";
 import { ImportBill } from "../model/Bill.js"; // ใช้ ImportBill แทน Manage
 
 dotenv.config();
@@ -383,5 +384,94 @@ router.post("/move-product", protect, validateMoveProduct, async (req, res) => {
     res.status(500).json({ success: false, error: "Failed to move products", details: error.message });
   }
 });
+
+// เส้นทาง: ดึงข้อมูล Impost PDFs (ไม่ตรวจสอบการล็อกอิน)
+router.get("/impostpdfs", async (req, res) => {
+  try {
+    const impostPdfs = await ImpostPdf.find({}).lean();
+
+    if (impostPdfs.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "ยังไม่มี PDF ใด ๆ ในระบบ",
+        data: [],
+      });
+    }
+
+    const pdfData = await Promise.all(
+      impostPdfs.map(async (pdf) => {
+        const bill = await ImportBill.findOne({ billNumber: pdf.billNumber }).lean();
+
+        if (!bill) {
+          return {
+            billNumber: pdf.billNumber,
+            importDate: null,
+            importTime: null,
+            items: [],
+            pdfUrl: pdf.pdfUrl,
+            type: null,
+          };
+        }
+
+        const createdAt = new Date(bill.createdAt);
+        const importDate = createdAt.toLocaleDateString("th-TH", {
+          day: "2-digit",
+          month: "long",
+          year: "numeric",
+        });
+        const importTime = createdAt.toLocaleTimeString("th-TH", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        });
+
+        const groupedItems = bill.items.reduce((map, item) => {
+          const productId = item.product.productId;
+          const existing = map.get(productId);
+          if (existing) {
+            existing.quantity += item.quantity;
+          } else {
+            map.set(productId, { name: item.product.name, quantity: item.quantity });
+          }
+          return map;
+        }, new Map());
+
+        const itemsList = Array.from(groupedItems.values()).map(
+          (item) => `${item.name} [${item.quantity}]`
+        );
+
+        return {
+          billNumber: pdf.billNumber,
+          importDate,
+          importTime,
+          items: itemsList,
+          pdfUrl: pdf.pdfUrl,
+          type: bill.type || null,
+        };
+      })
+    );
+
+    const filteredData = pdfData
+      .filter((item) => item.type === "in")
+      .sort((a, b) => {
+        const dateA = a.importDate && a.importTime ? new Date(`${a.importDate} ${a.importTime}`) : new Date(0);
+        const dateB = b.importDate && b.importTime ? new Date(`${b.importDate} ${b.importTime}`) : new Date(0);
+        return dateB - dateA;
+      });
+
+    res.status(200).json({
+      success: true,
+      message: "ดึงข้อมูล PDF สำเร็จ",
+      data: filteredData,
+    });
+  } catch (error) {
+    console.error("Error in GET /impostpdfs route:", error);
+    res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการดึงข้อมูล PDF",
+      details: error.message,
+    });
+  }
+})
 
 export default router;

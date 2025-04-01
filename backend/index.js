@@ -11,6 +11,7 @@ import billRoutes from "./routes/billRoutes.js";
 import manageRoutes from "./routes/manageRoutes.js";
 import withdrawRoutes from "./routes/withdrawRoutes.js"; 
 import dashboardRoutes from "./routes/dashboard.js";
+import createbillRoutes from "./routes/createbill.js"; // เพิ่มเส้นทางสำหรับสร้างบิลใหม่
 
 import path from "path";
 import fs from "fs";
@@ -59,6 +60,7 @@ app.use("/api/bill", billRoutes);
 app.use("/api/manage", manageRoutes);
 app.use("/api/withdraw", withdrawRoutes); 
 app.use("/api/dashboard", dashboardRoutes);
+app.use("/api/createbill", createbillRoutes);
 
 app.get("/api", (req, res) => {
   res.json({ message: "Hello, API Connected!" });

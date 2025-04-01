@@ -197,24 +197,15 @@ const generatePDF = async (billNumber, user) => {
   });
 };
 
-router.get("/exportpdfs", protect, async (req, res) => {
+router.get("/exportpdfs", async (req, res) => {
   try {
-    if (!req.user || !req.user._id) {
-      return res.status(400).json({
-        success: false,
-        error: "ไม่พบข้อมูลผู้ใช้งานในคำขอ",
-      });
-    }
-
-    console.log("User ID:", req.user._id);
-
-    // ดึงข้อมูล PDF ที่ผู้ใช้สร้าง
-    const exportPDFs = await ExportPdf.find({ createdBy: req.user._id }).lean();
+    // ดึงข้อมูล PDF ทั้งหมด
+    const exportPDFs = await ExportPdf.find({}).lean();
 
     if (exportPDFs.length === 0) {
       return res.status(200).json({
         success: true,
-        message: "คุณยังไม่เคยเบิกสินค้าหรือสร้าง PDF",
+        message: "ยังไม่มี PDF ใด ๆ ในระบบ",
         data: [],
       });
     }
@@ -279,7 +270,7 @@ router.get("/exportpdfs", protect, async (req, res) => {
 
     res.status(200).json({
       success: true,
-      message: "ดึงข้อมูล PDF ของผู้ใช้สำเร็จ",
+      message: "ดึงข้อมูล PDF สำเร็จ",
       data: pdfData,
     });
   } catch (error) {
@@ -425,6 +416,5 @@ router.post("/withdraw", protect, async (req, res) => {
     });
   }
 });
-
 
 export default router;
