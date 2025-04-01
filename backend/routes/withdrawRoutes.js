@@ -199,8 +199,13 @@ const generatePDF = async (billNumber, user) => {
 
 router.get("/exportpdfs", async (req, res) => {
   try {
-    // ดึงข้อมูล PDF ทั้งหมด
-    const exportPDFs = await ExportPdf.find({}).lean();
+    // ดึงข้อมูล PDF ทั้งหมดพร้อมข้อมูล employeeId จาก User
+    const exportPDFs = await ExportPdf.find({})
+      .populate({
+        path: "createdBy",
+        select: "employeeId firstName lastName", // เลือกเฉพาะฟิลด์ที่ต้องการ
+      })
+      .lean();
 
     if (exportPDFs.length === 0) {
       return res.status(200).json({
@@ -213,22 +218,23 @@ router.get("/exportpdfs", async (req, res) => {
     // ดึงข้อมูลเพิ่มเติมจาก ExportBill และจัดรูปแบบ
     const pdfData = await Promise.all(
       exportPDFs.map(async (pdf) => {
-        // ดึงข้อมูลใบเบิกที่ตรงกับ billNumber ของ PDF
         const bill = await ExportBill.findOne({ billNumber: pdf.billNumber }).lean();
 
         if (!bill) {
-          // กรณีไม่พบ bill ที่สัมพันธ์กับ PDF
           return {
             billNumber: pdf.billNumber,
             withdrawDate: null,
             withdrawTime: null,
             items: [],
             pdfUrl: pdf.pdfUrl,
-            type: null, // เพิ่ม type เป็น null กรณีไม่พบ bill
+            employeeId: pdf.createdBy?.employeeId || "ไม่ระบุ", // เพิ่ม employeeId
+            createdBy: pdf.createdBy
+              ? `${pdf.createdBy.firstName || "ไม่ระบุ"} ${pdf.createdBy.lastName || "ไม่ระบุ"}`
+              : "ไม่ระบุ",
+            type: null,
           };
         }
 
-        // แปลงวันที่และเวลา
         const createdAt = new Date(bill.createdAt);
         const withdrawDate = createdAt.toLocaleDateString("th-TH", {
           day: "2-digit",
@@ -241,7 +247,6 @@ router.get("/exportpdfs", async (req, res) => {
           hour12: false,
         });
 
-        // จัดกลุ่มรายการสินค้า
         const groupedItems = bill.items.reduce((map, item) => {
           const productId = item.product.productId;
           const existing = map.get(productId);
@@ -262,8 +267,12 @@ router.get("/exportpdfs", async (req, res) => {
           withdrawDate,
           withdrawTime,
           items: itemsList,
-          pdfUrl: pdf.pdfUrl, // URL ของ PDF
-          type: bill.type || null, // เพิ่ม type จาก bill
+          pdfUrl: pdf.pdfUrl,
+          employeeId: pdf.createdBy?.employeeId || "ไม่ระบุ", // เพิ่ม employeeId
+          createdBy: pdf.createdBy
+            ? `${pdf.createdBy.firstName || "ไม่ระบุ"} ${pdf.createdBy.lastName || "ไม่ระบุ"}`
+            : "ไม่ระบุ",
+          type: bill.type || null,
         };
       })
     );
