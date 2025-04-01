@@ -233,6 +233,7 @@ router.get("/exportpdfs", protect, async (req, res) => {
             withdrawTime: null,
             items: [],
             pdfUrl: pdf.pdfUrl,
+            type: null, // เพิ่ม type เป็น null กรณีไม่พบ bill
           };
         }
 
@@ -271,6 +272,7 @@ router.get("/exportpdfs", protect, async (req, res) => {
           withdrawTime,
           items: itemsList,
           pdfUrl: pdf.pdfUrl, // URL ของ PDF
+          type: bill.type || null, // เพิ่ม type จาก bill
         };
       })
     );

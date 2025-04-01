@@ -217,56 +217,96 @@ router.get("/impostpdfs", protect, async (req, res) => {
     }
 
     // ดึงข้อมูล Impost PDFs ที่สร้างโดยผู้ใช้ที่ล็อกอิน
-    const impostPdfs = await ImpostPdf.find({ userId: req.user._id }).populate('userId', 'firstName lastName');
+    const impostPdfs = await ImpostPdf.find({ userId: req.user._id }).lean();
 
-    // ดึงข้อมูลบิลนำเข้าที่เกี่ยวข้อง
-    const billNumbers = impostPdfs.map(pdf => pdf.billNumber);
-    const importBills = await ImportBill.find({ billNumber: { $in: billNumbers } });
-
-    // จัดรูปแบบผลลัพธ์
-    const result = impostPdfs.map(pdf => {
-      const bill = importBills.find(b => b.billNumber === pdf.billNumber);
-
-      // ถ้าไม่พบ bill ให้ข้าม
-      if (!bill) {
-        return null;
-      }
-
-      // จัดรูปแบบวันที่และเวลา
-      const createdAt = new Date(bill.createdAt);
-      const withdrawDate = createdAt.toLocaleDateString('th-TH', {
-        day: '2-digit',
-        month: 'long',
-        year: 'numeric'
+    // ตรวจสอบว่ามี Impost PDFs หรือไม่
+    if (impostPdfs.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "คุณยังไม่เคยนำเข้าสินค้าหรือสร้าง PDF",
+        data: [],
       });
-      const withdrawTime = createdAt.toLocaleTimeString('th-TH', {
-        hour: '2-digit',
-        minute: '2-digit'
-      });
+    }
 
-      // จัดรูปแบบ items
-      const items = bill.items.map(item => {
-        const productName = item.product.name || 'ไม่ระบุ';
-        const quantity = item.quantity || 0;
-        return `${productName} [${quantity}]`;
-      });
+    // ดึงข้อมูลเพิ่มเติมจาก ImportBill และจัดรูปแบบ
+    const pdfData = await Promise.all(
+      impostPdfs.map(async (pdf) => {
+        // ดึงข้อมูลใบเบิกที่ตรงกับ billNumber ของ PDF
+        const bill = await ImportBill.findOne({ billNumber: pdf.billNumber }).lean();
 
-      return {
-        billNumber: pdf.billNumber,
-        withdrawDate: withdrawDate, // วันที่นำเข้า
-        withdrawTime: withdrawTime, // เวลานำเข้า
-        items: items, // รายการสินค้าในรูปแบบ "ชื่อสินค้า [จำนวน]"
-        pdfUrl: pdf.pdfUrl // URL ของ PDF
-      };
-    }).filter(item => item !== null); // กรองข้อมูลที่ไม่พบ bill ออก
+        if (!bill) {
+          // กรณีไม่พบ bill ที่สัมพันธ์กับ PDF
+          return {
+            billNumber: pdf.billNumber,
+            importDate: null,
+            importTime: null,
+            items: [],
+            pdfUrl: pdf.pdfUrl,
+            type: null,
+          };
+        }
+
+        // แปลงวันที่และเวลา
+        const createdAt = new Date(bill.createdAt);
+        const importDate = createdAt.toLocaleDateString("th-TH", {
+          day: "2-digit",
+          month: "long",
+          year: "numeric",
+        });
+        const importTime = createdAt.toLocaleTimeString("th-TH", {
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        });
+
+        // จัดกลุ่มรายการสินค้า
+        const groupedItems = bill.items.reduce((map, item) => {
+          const productId = item.product.productId;
+          const existing = map.get(productId);
+          if (existing) {
+            existing.quantity += item.quantity;
+          } else {
+            map.set(productId, { name: item.product.name, quantity: item.quantity });
+          }
+          return map;
+        }, new Map());
+
+        const itemsList = Array.from(groupedItems.values()).map(
+          (item) => `${item.name} [${item.quantity}]`
+        );
+
+        return {
+          billNumber: pdf.billNumber,
+          importDate,
+          importTime,
+          items: itemsList,
+          pdfUrl: pdf.pdfUrl,
+          type: bill.type || null,
+        };
+      })
+    );
+
+    // กรองเฉพาะบิลที่มี type: "in" และเรียงลำดับตามวันที่
+    const filteredData = pdfData
+      .filter(item => item.type === "in")
+      .sort((a, b) => {
+        const dateA = a.importDate && a.importTime ? new Date(`${a.importDate} ${a.importTime}`) : new Date(0);
+        const dateB = b.importDate && b.importTime ? new Date(`${b.importDate} ${b.importTime}`) : new Date(0);
+        return dateB - dateA; // เรียงจากล่าสุดไปเก่าสุด
+      });
 
     res.status(200).json({
       success: true,
-      data: result
+      message: "ดึงข้อมูล PDF ของผู้ใช้สำเร็จ",
+      data: filteredData,
     });
   } catch (error) {
-    console.error("ไม่สามารถดึงข้อมูล Impost PDFs ได้:", error);
-    res.status(500).json({ success: false, error: "ไม่สามารถดึงข้อมูล Impost PDFs ได้", details: error.message });
+    console.error("Error in GET /impostpdfs route:", error);
+    res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการดึงข้อมูล PDF",
+      details: error.message,
+    });
   }
 });
 
@@ -342,7 +382,6 @@ router.post("/create", protect, validateBill, async (req, res) => {
     res.status(500).json({ success: false, error: "ไม่สามารถสร้างบิลได้", details: error.message });
   }
 });
-
 
 
 // เส้นทาง: ดึงข้อมูลบิลทั้งหมด (เพิ่ม pdfUrl)

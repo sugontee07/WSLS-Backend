@@ -2,8 +2,8 @@ import mongoose from "mongoose";
 
 // ฟังก์ชันสำหรับสร้างเลขบิลแบบสุ่ม 8 หลัก
 const generateBillNumber = () => {
-  const min = 10000000; // ตัวเลขขั้นต่ำ (8 หลัก)
-  const max = 99999999; // ตัวเลขสูงสุด (8 หลัก)
+  const min = 10000000;
+  const max = 99999999;
   return Math.floor(Math.random() * (max - min + 1)) + min;
 };
 
@@ -28,27 +28,27 @@ const generateUniqueBillNumber = async () => {
 const productSchema = new mongoose.Schema({
   productId: {
     type: String,
-    required: true, // ต้องระบุ
+    required: true,
   },
   name: {
     type: String,
-    required: true, // ต้องระบุ
+    required: true,
   },
   type: {
     type: String,
-    required: true, // ต้องระบุ
+    required: true,
   },
   image: {
     type: String,
-    default: "", // ค่าเริ่มต้นเป็นสตริงว่าง
+    default: "",
   },
   endDate: {
     type: Date,
-    required: true, // ต้องระบุ
+    required: true,
   },
   inDate: {
     type: Date,
-    required: true, // ต้องระบุ
+    required: true,
   },
 });
 
@@ -56,20 +56,20 @@ const productSchema = new mongoose.Schema({
 const itemSchema = new mongoose.Schema({
   cellId: {
     type: String,
-    required: false, // ไม่บังคับ
+    required: false,
   },
   product: {
     type: productSchema,
-    required: true, // ต้องระบุ
+    required: true,
   },
   quantity: {
     type: Number,
-    required: true, // ต้องระบุ
-    min: 1, // จำนวนต้องมากกว่า 0
+    required: true,
+    min: 1,
   },
   withdrawDate: {
     type: Date,
-    required: false, // ไม่บังคับ
+    required: false,
   },
 });
 
@@ -78,23 +78,23 @@ const billSchema = new mongoose.Schema(
   {
     billNumber: {
       type: String,
-      required: true, // ต้องระบุ
-      unique: true, // ต้องไม่ซ้ำ
-      // ลบ default ออก เพราะเราจะจัดการใน router
+      required: true,
+      unique: true,
     },
-    items: [itemSchema], // รายการสินค้า
+    items: [itemSchema],
     totalItems: {
       type: Number,
-      required: true, // ต้องระบุ
-      default: 0, // ค่าเริ่มต้นเป็น 0
+      required: true,
+      default: 0,
     },
     type: {
       type: String,
-      enum: ["in", "out"], // ต้องเป็น "in" หรือ "out"
-      required: true, // ต้องระบุ
+      enum: ["pending", "in", "out"], // เปลี่ยน enum และตัด "empty" ออก
+      required: true,
+      default: "pending", // เปลี่ยน default เป็น "pending"
     },
   },
-  { timestamps: true } // เพิ่มฟิลด์ createdAt และ updatedAt อัตโนมัติ
+  { timestamps: true }
 );
 
 // ฟังก์ชัน pre-save เพื่อคำนวณ totalItems และตรวจสอบฟิลด์ตาม type
@@ -104,7 +104,6 @@ billSchema.pre("save", function (next) {
 
   // ตรวจสอบฟิลด์ตาม type
   if (this.type === "out") {
-    // สำหรับ type: "out" (การเบิกสินค้า) ต้องมี cellId และ withdrawDate
     for (const item of this.items) {
       if (!item.cellId) {
         return next(new Error("ต้องระบุ cellId สำหรับ type 'out'"));
@@ -114,22 +113,28 @@ billSchema.pre("save", function (next) {
       }
     }
   } else if (this.type === "in") {
-    // สำหรับ type: "in" (การนำเข้า) ไม่ต้องมี cellId และ withdrawDate
     for (const item of this.items) {
       if (item.cellId || item.withdrawDate) {
         return next(new Error("ไม่ควรระบุ cellId และ withdrawDate สำหรับ type 'in'"));
       }
     }
+  } else if (this.type === "pending") {
+    // สำหรับ type: "pending" อนุญาตให้มี items ได้ แต่ไม่ต้องมี cellId หรือ withdrawDate
+    for (const item of this.items) {
+      if (item.cellId || item.withdrawDate) {
+        return next(new Error("ไม่ควรระบุ cellId และ withdrawDate สำหรับ type 'pending'"));
+      }
+    }
   } else {
-    return next(new Error("ต้องระบุ type และต้องเป็น 'in' หรือ 'out'"));
+    return next(new Error("ต้องระบุ type และต้องเป็น 'pending', 'in', หรือ 'out'"));
   }
 
   next();
 });
 
 // สร้างสองโมเดลสำหรับสองคอลเลกชัน
-const ImportBill = mongoose.model("ImportBill", billSchema, "importbills"); // สำหรับ type: "in"
-const ExportBill = mongoose.model("ExportBill", billSchema, "exporbills"); // สำหรับ type: "out"
+const ImportBill = mongoose.model("ImportBill", billSchema, "importbills");
+const ExportBill = mongoose.model("ExportBill", billSchema, "exporbills");
 
 // ส่งออกทั้งโมเดลและฟังก์ชัน
 export { ImportBill, ExportBill, generateUniqueBillNumber };

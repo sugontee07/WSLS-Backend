@@ -96,6 +96,9 @@ router.post("/assign-products-from-bill", protect, async (req, res) => {
       return res.status(404).json({ success: false, error: "Bill not found" });
     }
 
+    // ตรวจสอบสถานะของบิล
+
+    // ดึง items จาก billRecord
     const items = billRecord.items;
     if (!items || items.length === 0) {
       return res.status(400).json({ success: false, error: "No items found in the bill" });
@@ -103,7 +106,6 @@ router.post("/assign-products-from-bill", protect, async (req, res) => {
 
     // เก็บผลลัพธ์การ assign
     const assignmentResults = [];
-
     for (const assignment of assignments) {
       const { productId, cellId, subCell } = assignment;
 
@@ -182,18 +184,7 @@ router.post("/assign-products-from-bill", protect, async (req, res) => {
         targetProductsArray.push(productData);
       }
 
-      // อัปเดตสถานะ Cell หรือ subCell
-      if (subCell) {
-        if (subCell === "subCellsA" && cell.subCellsA.status === 0) {
-          cell.subCellsA.status = 1; // เปลี่ยนสถานะ subCellsA
-        } else if (subCell === "subCellsB" && cell.subCellsB.status === 0) {
-          cell.subCellsB.status = 1; // เปลี่ยนสถานะ subCellsB
-        }
-      } else if (cell.status === 0 && cell.products.length > 0) {
-        cell.status = 1; // เปลี่ยนสถานะ cell หลัก
-      }
-
-      // บันทึกการเปลี่ยนแปลงใน Cell (pre("save") จะจัดการ total และการรวม quantity อัตโนมัติ)
+      // บันทึกการเปลี่ยนแปลงใน Cell
       await cell.save();
 
       // เก็บผลลัพธ์
@@ -205,10 +196,18 @@ router.post("/assign-products-from-bill", protect, async (req, res) => {
       });
     }
 
+    // เปลี่ยน type ของบิลเป็น "in"
+    billRecord.type = "in";
+    await billRecord.save();
+
     res.status(200).json({
       success: true,
       message: "Products assigned successfully",
-      data: assignmentResults,
+      data: {
+        billNumber: billRecord.billNumber,
+        type: billRecord.type, // ใช้ type เพียงอย่างเดียว
+        assignmentResults,
+      },
     });
   } catch (error) {
     console.error("Failed to assign products from bill:", error);

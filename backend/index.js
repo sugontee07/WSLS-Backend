@@ -10,6 +10,7 @@ import productRoutes from "./routes/productRoutes.js";
 import billRoutes from "./routes/billRoutes.js";
 import manageRoutes from "./routes/manageRoutes.js";
 import withdrawRoutes from "./routes/withdrawRoutes.js"; 
+import dashboardRoutes from "./routes/dashboard.js";
 
 import path from "path";
 import fs from "fs";
@@ -56,7 +57,8 @@ app.use("/api/cell", cellRoutes);
 app.use("/api/product", productRoutes);
 app.use("/api/bill", billRoutes);
 app.use("/api/manage", manageRoutes);
-app.use("/api/withdraw", withdrawRoutes); // เปลี่ยนจาก pdfRoutes เป็น withdrawRoutes
+app.use("/api/withdraw", withdrawRoutes); 
+app.use("/api/dashboard", dashboardRoutes);
 
 app.get("/api", (req, res) => {
   res.json({ message: "Hello, API Connected!" });

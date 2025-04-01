@@ -203,7 +203,7 @@ router.post('/forgot-password', async (req, res) => {
 
     // ส่งอีเมล
     await transporter.sendMail({
-      from: `"Your App Name" <${process.env.EMAIL_USER}>`,
+      from: `"WSLS" <${process.env.EMAIL_USER}>`,
       to: user.email,
       subject: 'คำขอรีเซ็ตรหัสผ่าน',
       html: `
