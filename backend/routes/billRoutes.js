@@ -1,53 +1,55 @@
 import express from "express";
 import { ImportBill, ExportBill, generateUniqueBillNumber } from "../model/Bill.js";
 import { protect, isAdmin } from "../middleware/auth.js";
+import ImpostPdf from "../model/ImportPdf.js"; // แก้ไขเส้นทางให้ถูกต้อง
 
 const router = express.Router();
 
-// เส้นทาง: ดึงข้อมูลบิลทั้งหมด (เพิ่ม pdfUrl)
+
+// เส้นทาง: ดึงข้อมูลบิลทั้งหมด (เพิ่ม pdfUrl และ employeeId)
 router.get("/allBills", async (req, res) => {
   try {
-    const importBills = await ImportBill.find();
-    const exportBills = await ExportBill.find();
-    const bills = [...importBills, ...exportBills];
+    // ดึงข้อมูลจาก ImportBill (คอลเลกชัน importbills) ทั้งหมด
+    const importBills = await ImportBill.find().lean();
 
-    // ดึงข้อมูล PDF ที่เกี่ยวข้อง
-    const pdfs = await ImpostPdf.find({ billNumber: { $in: bills.map(b => b.billNumber) } });
+    if (!importBills || importBills.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "ยังไม่มีบิลในระบบ",
+        data: [],
+      });
+    }
+
+    // ดึงข้อมูล PDF ที่เกี่ยวข้องจาก ImpostPdf
+    const pdfs = await ImpostPdf.find({
+      billNumber: { $in: importBills.map((bill) => bill.billNumber) },
+    }).lean();
+
+    // รวมข้อมูลบิลและ PDF โดยไม่ตัดข้อมูลจาก importbills
+    const billsWithPdf = importBills.map((bill) => {
+      const pdf = pdfs.find((p) => p.billNumber === bill.billNumber);
+      return {
+        ...bill, // รวมข้อมูลทั้งหมดจาก importbills
+        employeeId: bill.employeeId || pdf?.employeeId || "ไม่ระบุ", // เพิ่ม employeeId
+        pdfUrl: pdf?.pdfUrl || null, // เพิ่ม pdfUrl จาก ImpostPdf
+      };
+    });
 
     res.status(200).json({
       success: true,
-      data: bills.map(bill => {
-        const pdf = pdfs.find(p => p.billNumber === bill.billNumber);
-        return {
-          billNumber: bill.billNumber,
-          items: bill.items.map(item => ({
-            cellId: item.cellId || null,
-            product: {
-              productId: item.product.productId,
-              type: item.product.type,
-              name: item.product.name,
-              image: item.product.image || null,
-              endDate: item.product.endDate,
-              inDate: item.product.inDate,
-            },
-            quantity: item.quantity,
-            withdrawDate: item.withdrawDate || null,
-          })),
-          totalItems: bill.totalItems,
-          type: bill.type,
-          createdAt: bill.createdAt,
-          updatedAt: bill.updatedAt,
-          pdfUrl: pdf?.pdfUrl || null
-        };
-      }),
+      data: billsWithPdf,
     });
   } catch (error) {
     console.error("ไม่สามารถดึงข้อมูลบิลได้:", error);
-    res.status(500).json({ success: false, error: "ไม่สามารถดึงข้อมูลบิลได้", details: error.message });
+    res.status(500).json({
+      success: false,
+      error: "ไม่สามารถดึงข้อมูลบิลได้",
+      details: error.message,
+    });
   }
 });
 
-// เส้นทาง: ดึงข้อมูลบิลตาม billNumber (เพิ่ม pdfUrl)
+// เส้นทาง: ดึงข้อมูลบิลตาม billNumber (เพิ่ม pdfUrl และ employeeId)
 router.get("/billNumber/:billNumber", protect, async (req, res) => {
   try {
     const billNumber = req.params.billNumber;
@@ -58,7 +60,9 @@ router.get("/billNumber/:billNumber", protect, async (req, res) => {
       });
     }
 
-    const bill = await ImportBill.findOne({ billNumber });
+    // ดึงข้อมูลจาก ImportBill (คอลเลกชัน importbills) ทั้งหมด
+    const bill = await ImportBill.findOne({ billNumber }).lean();
+
     if (!bill) {
       return res.status(404).json({
         success: false,
@@ -66,35 +70,25 @@ router.get("/billNumber/:billNumber", protect, async (req, res) => {
       });
     }
 
-    const pdf = await ImpostPdf.findOne({ billNumber });
+    // ดึง pdfUrl จาก ImpostPdf
+    const pdf = await ImpostPdf.findOne({ billNumber }).lean();
 
+    // สร้าง response โดยรวมข้อมูลทั้งหมดจาก importbills
     res.status(200).json({
       success: true,
       data: {
-        billNumber: bill.billNumber,
-        items: bill.items.map(item => ({
-          cellId: item.cellId || null,
-          product: {
-            productId: item.product.productId,
-            name: item.product.name,
-            type: item.product.type,
-            image: item.product.image || null,
-            endDate: item.product.endDate,
-            inDate: item.product.inDate,
-          },
-          quantity: item.quantity,
-          withdrawDate: item.withdrawDate || null,
-        })),
-        totalItems: bill.totalItems,
-        type: bill.type,
-        createdAt: bill.createdAt,
-        updatedAt: bill.updatedAt,
-        pdfUrl: pdf?.pdfUrl || null
+        ...bill, // รวมข้อมูลทั้งหมดจาก importbills
+        employeeId: bill.employeeId || pdf?.employeeId || "ไม่ระบุ", // เพิ่ม employeeId
+        pdfUrl: pdf?.pdfUrl || null, // เพิ่ม pdfUrl จาก ImpostPdf
       },
     });
   } catch (error) {
     console.error("ไม่สามารถดึงข้อมูลบิลได้:", error);
-    res.status(500).json({ success: false, error: "ไม่สามารถดึงข้อมูลบิลได้", details: error.message });
+    res.status(500).json({
+      success: false,
+      error: "ไม่สามารถดึงข้อมูลบิลได้",
+      details: error.message,
+    });
   }
 });
 

@@ -2,8 +2,9 @@ import express from 'express';
 import dotenv from 'dotenv';
 import { protect, isAdmin } from '../middleware/auth.js';
 import Cell from "../model/Cell.js"; 
-import ImpostPdf from "../model/ImpostPdf.js";
+import ImpostPdf from "../model/ImportPdf.js";
 import { ImportBill } from "../model/Bill.js"; // ใช้ ImportBill แทน Manage
+import ImportExportList from "../model/ImportExportList.js";
 
 dotenv.config();
 
@@ -78,143 +79,6 @@ const validateWithdrawProduct = (req, res, next) => {
   req.validatedWithdrawals = withdrawals; // ส่งข้อมูลที่ตรวจสอบแล้วไปยัง handler
   next();
 };
-
-router.post("/assign-products-from-bill", protect, async (req, res) => {
-  try {
-    const { billNumber, assignments } = req.body;
-
-    // ตรวจสอบ input
-    if (!billNumber || !assignments || !Array.isArray(assignments) || assignments.length === 0) {
-      return res.status(400).json({
-        success: false,
-        error: "Missing required fields: billNumber and assignments (array) are required",
-      });
-    }
-
-    // ดึงข้อมูลจาก ImportBill
-    const billRecord = await ImportBill.findOne({ billNumber });
-    if (!billRecord) {
-      return res.status(404).json({ success: false, error: "Bill not found" });
-    }
-
-    // ตรวจสอบสถานะของบิล
-
-    // ดึง items จาก billRecord
-    const items = billRecord.items;
-    if (!items || items.length === 0) {
-      return res.status(400).json({ success: false, error: "No items found in the bill" });
-    }
-
-    // เก็บผลลัพธ์การ assign
-    const assignmentResults = [];
-    for (const assignment of assignments) {
-      const { productId, cellId, subCell } = assignment;
-
-      // ตรวจสอบข้อมูล assignment
-      if (!productId || !cellId) {
-        return res.status(400).json({
-          success: false,
-          error: "Each assignment must include productId and cellId",
-        });
-      }
-
-      // ตรวจสอบว่าสินค้าอยู่ในบิลหรือไม่
-      const item = items.find(i => i.product.productId === productId);
-      if (!item) {
-        return res.status(400).json({
-          success: false,
-          error: `Product with ID ${productId} not found in bill ${billNumber}`,
-        });
-      }
-
-      // ตรวจสอบ quantity จาก bill
-      const quantity = item.quantity;
-      if (!quantity || quantity < 1) {
-        return res.status(400).json({
-          success: false,
-          error: `Invalid quantity for product ${productId} in bill ${billNumber}`,
-        });
-      }
-
-      // ดึงข้อมูล Cell
-      let cell = await Cell.findOne({ cellId });
-      if (!cell) {
-        return res.status(404).json({ success: false, error: `Cell ${cellId} not found` });
-      }
-
-      // ตรวจสอบ subCell และ divisionType
-      let targetProductsArray = cell.products; // Default: ใช้ products หลัก
-      if (subCell) {
-        if (!["subCellsA", "subCellsB"].includes(subCell)) {
-          return res.status(400).json({
-            success: false,
-            error: "Invalid subCell value. Must be 'subCellsA' or 'subCellsB'",
-          });
-        }
-
-        // ตรวจสอบ divisionType
-        if (cell.divisionType !== "dual") {
-          return res.status(400).json({
-            success: false,
-            error: `Cell ${cellId} is not a dual cell. Cannot assign to ${subCell}`,
-          });
-        }
-
-        // กำหนด target array ตาม subCell
-        targetProductsArray = subCell === "subCellsA" ? cell.subCellsA.products : cell.subCellsB.products;
-      }
-
-      // สร้าง object สินค้าให้สอดคล้องกับ productSchema
-      const productData = {
-        product: {
-          productId: item.product.productId,
-          type: item.product.type || "Unknown",
-          name: item.product.name || "Unknown",
-          image: item.product.image || null,
-        },
-        quantity: Number(quantity),
-        endDate: item.product.endDate || new Date(),
-        inDate: item.product.inDate || new Date(),
-      };
-
-      // เพิ่มสินค้าใน array ที่เหมาะสม
-      const existingProduct = targetProductsArray.find(p => p.product.productId === productId);
-      if (existingProduct) {
-        existingProduct.quantity += Number(quantity);
-      } else {
-        targetProductsArray.push(productData);
-      }
-
-      // บันทึกการเปลี่ยนแปลงใน Cell
-      await cell.save();
-
-      // เก็บผลลัพธ์
-      assignmentResults.push({
-        cellId,
-        productId,
-        quantity,
-        subCell: subCell || null,
-      });
-    }
-
-    // เปลี่ยน type ของบิลเป็น "in"
-    billRecord.type = "in";
-    await billRecord.save();
-
-    res.status(200).json({
-      success: true,
-      message: "Products assigned successfully",
-      data: {
-        billNumber: billRecord.billNumber,
-        type: billRecord.type, // ใช้ type เพียงอย่างเดียว
-        assignmentResults,
-      },
-    });
-  } catch (error) {
-    console.error("Failed to assign products from bill:", error);
-    res.status(500).json({ success: false, error: "Failed to assign products", details: error.message });
-  }
-});
 
 // Route: ย้ายสินค้าจาก Cell หนึ่งไปยังอีก Cell หนึ่ง (รองรับหลายรายการและ subCell)
 router.post("/move-product", protect, validateMoveProduct, async (req, res) => {
@@ -385,10 +249,213 @@ router.post("/move-product", protect, validateMoveProduct, async (req, res) => {
   }
 });
 
+router.post("/assign-products-from-bill", protect, async (req, res) => {
+  try {
+    const { billNumber, assignments } = req.body;
+
+    // ตรวจสอบ input
+    if (!billNumber || !assignments || !Array.isArray(assignments) || assignments.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required fields: billNumber and assignments (array) are required",
+      });
+    }
+
+    // ตรวจสอบว่า req.user.employeeId มีค่าหรือไม่
+    if (!req.user.employeeId) {
+      console.error("req.user.employeeId is missing:", req.user);
+      return res.status(400).json({
+        success: false,
+        error: "Employee ID is missing in user data",
+      });
+    }
+
+    // ดึงข้อมูลจาก ImportBill
+    const billRecord = await ImportBill.findOne({ billNumber });
+    if (!billRecord) {
+      return res.status(404).json({ success: false, error: "Bill not found" });
+    }
+
+    // ตรวจสอบสถานะของบิล
+    if (billRecord.type !== "pending") {
+      return res.status(400).json({
+        success: false,
+        error: `Bill ${billNumber} is not in 'pending' status. Current status: ${billRecord.type}`,
+      });
+    }
+
+    // ดึง items จาก billRecord
+    const items = billRecord.items;
+    if (!items || items.length === 0) {
+      return res.status(400).json({ success: false, error: "No items found in the bill" });
+    }
+
+    // คำนวณจำนวนสินค้าที่นำเข้า (inCount)
+    const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+
+    // เก็บผลลัพธ์การ assign
+    const assignmentResults = [];
+    for (const assignment of assignments) {
+      const { productId, cellId, subCell } = assignment;
+
+      // ตรวจสอบข้อมูล assignment
+      if (!productId || !cellId) {
+        return res.status(400).json({
+          success: false,
+          error: "Each assignment must include productId and cellId",
+        });
+      }
+
+      // ตรวจสอบว่าสินค้าอยู่ในบิลหรือไม่
+      const item = items.find((i) => i.product.productId === productId);
+      if (!item) {
+        return res.status(400).json({
+          success: false,
+          error: `Product with ID ${productId} not found in bill ${billNumber}`,
+        });
+      }
+
+      // ตรวจสอบ quantity จาก bill
+      const quantity = item.quantity;
+      if (!quantity || quantity < 1) {
+        return res.status(400).json({
+          success: false,
+          error: `Invalid quantity for product ${productId} in bill ${billNumber}`,
+        });
+      }
+
+      // ดึงข้อมูล Cell
+      let cell = await Cell.findOne({ cellId });
+      if (!cell) {
+        return res.status(404).json({ success: false, error: `Cell ${cellId} not found` });
+      }
+
+      // ตรวจสอบ subCell และ divisionType
+      let targetProductsArray = cell.products; // Default: ใช้ products หลัก
+      if (subCell) {
+        if (!["subCellsA", "subCellsB"].includes(subCell)) {
+          return res.status(400).json({
+            success: false,
+            error: "Invalid subCell value. Must be 'subCellsA' or 'subCellsB'",
+          });
+        }
+
+        // ตรวจสอบ divisionType
+        if (cell.divisionType !== "dual") {
+          return res.status(400).json({
+            success: false,
+            error: `Cell ${cellId} is not a dual cell. Cannot assign to ${subCell}`,
+          });
+        }
+
+        // กำหนด target array ตาม subCell
+        targetProductsArray = subCell === "subCellsA" ? cell.subCellsA.products : cell.subCellsB.products;
+      }
+
+      // สร้าง object สินค้าให้สอดคล้องกับ productSchema
+      const productData = {
+        product: {
+          productId: item.product.productId,
+          type: item.product.type || "Unknown",
+          name: item.product.name || "Unknown",
+          image: item.product.image || null,
+        },
+        quantity: Number(quantity),
+        endDate: item.product.endDate || new Date(),
+        inDate: item.product.inDate || new Date(),
+        assignedBy: req.user.employeeId, // เพิ่ม employeeId ของผู้ที่ทำการ assign
+      };
+
+      // เพิ่มสินค้าใน array ที่เหมาะสม
+      const existingProduct = targetProductsArray.find((p) => p.product.productId === productId);
+      if (existingProduct) {
+        existingProduct.quantity += Number(quantity);
+      } else {
+        targetProductsArray.push(productData);
+      }
+
+      // บันทึกการเปลี่ยนแปลงใน Cell
+      await cell.save();
+
+      // เก็บผลลัพธ์
+      assignmentResults.push({
+        cellId,
+        productId,
+        quantity,
+        subCell: subCell || null,
+        assignedBy: req.user.employeeId, // เพิ่ม employeeId ในผลลัพธ์
+      });
+    }
+
+    // เปลี่ยน type ของบิลเป็น "in" และบันทึก employeeId ใน ImportBill
+    billRecord.type = "in";
+    billRecord.employeeId = req.user.employeeId; // เพิ่ม employeeId จาก req.user
+    console.log("Saving employeeId to ImportBill:", req.user.employeeId); // Debug
+    await billRecord.save();
+
+    // อัปเดต ImpostPdf เพื่อบันทึก employeeId
+    let impostPdf = await ImpostPdf.findOne({ billNumber });
+    if (!impostPdf) {
+      return res.status(404).json({
+        success: false,
+        error: `ImpostPdf for bill ${billNumber} not found`,
+      });
+    }
+
+    // อัปเดต employeeId ใน ImpostPdf
+    impostPdf.employeeId = req.user.employeeId;
+    console.log("Saving employeeId to ImpostPdf:", req.user.employeeId); // Debug
+    await impostPdf.save();
+
+    // บันทึกข้อมูลลง ImportExportList
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // ตั้งค่าให้เป็นวันที่ไม่มีเวลา
+
+    // ค้นหา record ของวันนี้
+    let record = await ImportExportList.findOne({ date: today });
+    if (!record) {
+      // ถ้าไม่พบ ให้สร้าง record ใหม่
+      record = new ImportExportList({
+        date: today,
+        inCount: totalQuantity,
+        outCount: 0,
+      });
+    } else {
+      // ถ้าพบ ให้เพิ่ม inCount
+      record.inCount += totalQuantity;
+    }
+    await record.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Products assigned successfully",
+      data: {
+        billNumber: billRecord.billNumber,
+        type: billRecord.type,
+        employeeId: billRecord.employeeId, // เพิ่ม employeeId ใน response
+        assignmentResults,
+      },
+    });
+  } catch (error) {
+    console.error("Failed to assign products from bill:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to assign products",
+      details: error.message,
+    });
+  }
+});
+
 // เส้นทาง: ดึงข้อมูล Impost PDFs (ไม่ตรวจสอบการล็อกอิน)
 router.get("/impostpdfs", async (req, res) => {
   try {
-    const impostPdfs = await ImpostPdf.find({}).lean();
+    // ดึงข้อมูล ImpostPdf ทั้งหมดพร้อมข้อมูล employeeId จาก User
+    const impostPdfs = await ImpostPdf.find({})
+      .populate({
+        path: "user",
+        select: "employeeId firstName lastName", // เลือกเฉพาะฟิลด์ที่ต้องการ
+      })
+      .lean();
 
     if (impostPdfs.length === 0) {
       return res.status(200).json({
@@ -409,6 +476,10 @@ router.get("/impostpdfs", async (req, res) => {
             importTime: null,
             items: [],
             pdfUrl: pdf.pdfUrl,
+            employeeId: pdf.employeeId || pdf.user?.employeeId || "ไม่ระบุ", // ดึงจาก pdf.employeeId ก่อน
+            createdBy: pdf.user
+              ? `${pdf.user.firstName || "ไม่ระบุ"} ${pdf.user.lastName || "ไม่ระบุ"}`
+              : undefined,
             type: null,
           };
         }
@@ -446,23 +517,19 @@ router.get("/impostpdfs", async (req, res) => {
           importTime,
           items: itemsList,
           pdfUrl: pdf.pdfUrl,
+          employeeId: pdf.employeeId || bill.employeeId || pdf.user?.employeeId || "ไม่ระบุ", // ดึงจาก pdf.employeeId, bill.employeeId, แล้วค่อย pdf.user?.employeeId
+          createdBy: pdf.user
+            ? `${pdf.user.firstName || "ไม่ระบุ"} ${pdf.user.lastName || "ไม่ระบุ"}`
+            : undefined,
           type: bill.type || null,
         };
       })
     );
 
-    const filteredData = pdfData
-      .filter((item) => item.type === "in")
-      .sort((a, b) => {
-        const dateA = a.importDate && a.importTime ? new Date(`${a.importDate} ${a.importTime}`) : new Date(0);
-        const dateB = b.importDate && b.importTime ? new Date(`${b.importDate} ${b.importTime}`) : new Date(0);
-        return dateB - dateA;
-      });
-
     res.status(200).json({
       success: true,
       message: "ดึงข้อมูล PDF สำเร็จ",
-      data: filteredData,
+      data: pdfData,
     });
   } catch (error) {
     console.error("Error in GET /impostpdfs route:", error);
@@ -472,6 +539,6 @@ router.get("/impostpdfs", async (req, res) => {
       details: error.message,
     });
   }
-})
+});
 
 export default router;

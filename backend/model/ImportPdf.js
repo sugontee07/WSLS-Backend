@@ -1,7 +1,7 @@
 import mongoose from "mongoose";
 
-// สร้าง schema สำหรับ ImpostPdf
-const impostPdfSchema = new mongoose.Schema(
+// สร้าง schema สำหรับ ImportPdf
+const importPdfSchema = new mongoose.Schema(
   {
     billNumber: {
       type: String,
@@ -21,6 +21,11 @@ const impostPdfSchema = new mongoose.Schema(
       required: false, // อนุญาตให้เป็น null ได้
       default: null,
     },
+    employeeId: {
+      type: String, // เพิ่มฟิลด์ employeeId
+      required: false,
+      default: null,
+    },
     createdAt: {
       type: Date,
       default: Date.now,
@@ -34,10 +39,10 @@ const impostPdfSchema = new mongoose.Schema(
 );
 
 // เพิ่ม index สำหรับ billNumber
-impostPdfSchema.index({ billNumber: 1 }, { unique: true });
+importPdfSchema.index({ billNumber: 1 }, { unique: true });
 
 // Middleware: จัดการ error เมื่อ billNumber ซ้ำ
-impostPdfSchema.post("save", function (error, doc, next) {
+importPdfSchema.post("save", function (error, doc, next) {
   if (error.name === "MongoServerError" && error.code === 11000) {
     next(new Error(`เลขบิล ${doc.billNumber} มีอยู่ในระบบแล้ว`));
   } else {
@@ -46,7 +51,7 @@ impostPdfSchema.post("save", function (error, doc, next) {
 });
 
 // Middleware: จัดการ error สำหรับการ update (เช่น findOneAndUpdate)
-impostPdfSchema.post("findOneAndUpdate", function (error, doc, next) {
+importPdfSchema.post("findOneAndUpdate", function (error, doc, next) {
   if (error.name === "MongoServerError" && error.code === 11000) {
     next(new Error(`เลขบิล ${doc.billNumber} มีอยู่ในระบบแล้ว`));
   } else {
@@ -55,7 +60,7 @@ impostPdfSchema.post("findOneAndUpdate", function (error, doc, next) {
 });
 
 // Middleware: ตรวจสอบก่อนบันทึก
-impostPdfSchema.pre("save", async function (next) {
+importPdfSchema.pre("save", async function (next) {
   // ตรวจสอบว่า billNumber มีอยู่ใน ImportBill หรือ ExportBill หรือไม่
   const [importBill, exportBill] = await Promise.all([
     mongoose.model("ImportBill").findOne({ billNumber: this.billNumber }),
@@ -79,7 +84,7 @@ impostPdfSchema.pre("save", async function (next) {
 });
 
 // Virtual: ดึงข้อมูล user
-impostPdfSchema.virtual("user", {
+importPdfSchema.virtual("user", {
   ref: "User",
   localField: "userId",
   foreignField: "_id",
@@ -87,6 +92,6 @@ impostPdfSchema.virtual("user", {
 });
 
 // สร้างโมเดล
-const ImpostPdf = mongoose.model("ImpostPdf", impostPdfSchema);
+const ImportPdf = mongoose.model("ImportPdf", importPdfSchema);
 
-export default ImpostPdf;
+export default ImportPdf;

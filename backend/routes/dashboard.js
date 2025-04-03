@@ -1,7 +1,8 @@
 import express from "express";
 import { protect } from "../middleware/auth.js";
 import { ImportBill, ExportBill, generateUniqueBillNumber } from "../model/Bill.js";
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
+import ImportExportList from "../model/ImportExportList.js"; // แก้ไขเส้นทางให้ถูกต้อง
 
 dotenv.config();
 
@@ -15,31 +16,35 @@ router.get("/latest-items", protect, async (req, res) => {
 
     // ดึงข้อมูลใบนำเข้าสินค้า (ImportBill) เฉพาะ type: "in"
     const importBills = await ImportBill.find({ type: "in" })
-      .sort({ createdAt: -1 }) // เรียงลำดับจากล่าสุด
-      .limit(5); // จำกัดจำนวน 5 รายการล่าสุด
+      .sort({ createdAt: -1 })
+      .limit(5);
 
     // ดึงข้อมูลใบส่งออกสินค้า (ExportBill) เฉพาะ type: "out"
     const exportBills = await ExportBill.find({ type: "out" })
-      .sort({ createdAt: -1 }) // เรียงลำดับจากล่าสุด
-      .limit(5); // จำกัดจำนวน 5 รายการล่าสุด
+      .sort({ createdAt: -1 })
+      .limit(5);
 
-    // แปลงข้อมูล ImportBill เป็นรูปแบบที่ต้องการ
-    const importOrders = importBills.map((bill) => ({
-      trackingNo: bill.billNumber || "N/A",
-      productName: bill.items.map((item) => item.product.name).join(", "),
-      status: "in", // ใช้ type จาก bill
-      amount: bill.items.reduce((sum, item) => sum + item.quantity, 0),
-      createdAt: bill.createdAt,
-    }));
+    // แปลงข้อมูล ImportBill โดยแยกแต่ละ item ออกมาเป็นแถว
+    const importOrders = importBills.flatMap((bill) =>
+      bill.items.map((item) => ({
+        trackingNo: item.product.productId || "N/A",
+        productName: item.product.name || "Unknown",
+        status: "in",
+        amount: item.quantity,
+        createdAt: bill.createdAt,
+      }))
+    );
 
-    // แปลงข้อมูล ExportBill เป็นรูปแบบที่ต้องการ
-    const exportOrders = exportBills.map((bill) => ({
-      trackingNo: bill.billNumber || "N/A",
-      productName: bill.items.map((item) => item.product.name).join(", "),
-      status: "out", // ใช้ type จาก bill
-      amount: bill.items.reduce((sum, item) => sum + item.quantity, 0),
-      createdAt: bill.createdAt,
-    }));
+    // แปลงข้อมูล ExportBill โดยแยกแต่ละ item ออกมาเป็นแถว
+    const exportOrders = exportBills.flatMap((bill) =>
+      bill.items.map((item) => ({
+        trackingNo: item.product.productId || "N/A",
+        productName: item.product.name || "Unknown",
+        status: "out",
+        amount: item.quantity,
+        createdAt: bill.createdAt,
+      }))
+    );
 
     // รวมข้อมูลสินค้าเข้าและออก
     let recentOrders = [...importOrders, ...exportOrders];
@@ -78,10 +83,57 @@ router.get("/latest-items", protect, async (req, res) => {
         productName,
         status,
         amount,
-      })), // ส่งเฉพาะ field ที่ต้องการให้ตรงกับตาราง
+      })),
     });
   } catch (error) {
     console.error("เกิดข้อผิดพลาดใน GET /latest-items:", error);
+    res.status(500).json({
+      success: false,
+      message: "เกิดข้อผิดพลาดในการดึงข้อมูลสินค้าเข้าและออก",
+      details: error.message,
+    });
+  }
+});
+
+// API: ดึงข้อมูลสินค้าเข้าและออกต่อวัน
+router.get("/daily-items", protect, async (req, res) => {
+  try {
+    const { date } = req.query;
+
+    let targetDate;
+    if (date) {
+      targetDate = new Date(date);
+      if (isNaN(targetDate)) {
+        return res.status(400).json({
+          success: false,
+          message: "Invalid date format. Please use YYYY-MM-DD",
+        });
+      }
+    } else {
+      targetDate = new Date();
+    }
+
+    targetDate.setHours(0, 0, 0, 0);
+
+    let record = await ImportExportList.findOne({ date: targetDate }).lean();
+
+    if (!record) {
+      record = {
+        date: targetDate,
+        inCount: 0,
+        outCount: 0,
+      };
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        inCount: record.inCount,
+        outCount: record.outCount,
+      },
+    });
+  } catch (error) {
+    console.error("เกิดข้อผิดพลาดใน GET /daily-items:", error);
     res.status(500).json({
       success: false,
       message: "เกิดข้อผิดพลาดในการดึงข้อมูลสินค้าเข้าและออก",

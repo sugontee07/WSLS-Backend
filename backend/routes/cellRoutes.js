@@ -282,18 +282,21 @@ router.get("/cellsAll", async (req, res) => {
 });
 
 // Route: ดึงข้อมูลสรุป
-router.get("/summary", async (req, res) => {
+router.get("/summary", protect, async (req, res) => {
   try {
+    // นับ Cell ที่มี divisionType เป็น null หรือ single
     const singleOrNullActiveBoxes = await Cell.countDocuments({ divisionType: { $in: [null, "single"] }, status: 1 });
     const singleOrNullInactiveBoxes = await Cell.countDocuments({ divisionType: { $in: [null, "single"] }, status: 2 });
     const singleOrNullDisabledBoxes = await Cell.countDocuments({ divisionType: { $in: [null, "single"] }, status: 3 });
     const singleOrNullNullBoxes = await Cell.countDocuments({ divisionType: { $in: [null, "single"] }, status: 0 });
 
+    // นับ subCellsA
     const activeSubCellsA = await Cell.countDocuments({ divisionType: "dual", "subCellsA.status": 1 });
     const inactiveSubCellsA = await Cell.countDocuments({ divisionType: "dual", "subCellsA.status": 2 });
     const disabledSubCellsA = await Cell.countDocuments({ divisionType: "dual", "subCellsA.status": 3 });
     const nullSubCellsA = await Cell.countDocuments({ divisionType: "dual", "subCellsA.status": 0 });
 
+    // นับ subCellsB
     const activeSubCellsB = await Cell.countDocuments({ divisionType: "dual", "subCellsB.status": 1 });
     const inactiveSubCellsB = await Cell.countDocuments({ divisionType: "dual", "subCellsB.status": 2 });
     const disabledSubCellsB = await Cell.countDocuments({ divisionType: "dual", "subCellsB.status": 3 });
@@ -304,8 +307,13 @@ router.get("/summary", async (req, res) => {
                        activeSubCellsA + inactiveSubCellsA + disabledSubCellsA +
                        activeSubCellsB + inactiveSubCellsB + disabledSubCellsB;
 
-    // คำนวณ emptyBoxes (เดิมคือ nullBoxes) เป็นเซลล์ที่มี status: 0
+    // คำนวณ emptyBoxes (status: 0)
     const emptyBoxes = singleOrNullNullBoxes + nullSubCellsA + nullSubCellsB;
+
+    // คำนวณ allBoxes โดยนับจำนวน Cell และ subCells ทั้งหมด
+    const singleOrNullCells = await Cell.countDocuments({ divisionType: { $in: [null, "single"] } });
+    const dualCells = await Cell.countDocuments({ divisionType: "dual" });
+    const allBoxes = singleOrNullCells + (dualCells * 2); // dualCells มี 2 subCells (A และ B)
 
     // หาเซลล์ที่มี updatedAt ล่าสุด
     const latestUpdate = await Cell.findOne().sort({ updatedAt: -1 }).lean();
@@ -326,12 +334,17 @@ router.get("/summary", async (req, res) => {
         inactiveBoxes: singleOrNullInactiveBoxes + inactiveSubCellsA + inactiveSubCellsB,
         disabledBoxes: singleOrNullDisabledBoxes + disabledSubCellsA + disabledSubCellsB,
         emptyBoxes: emptyBoxes,
-        lastUpdate: formattedLastUpdate // ใช้ lastUpdate แทน Lastupdate
+        allBoxes: allBoxes, // เพิ่ม allBoxes
+        lastUpdate: formattedLastUpdate
       },
     });
   } catch (error) {
     console.error("Failed to fetch cell summary:", error);
-    res.status(500).json({ success: false, error: "Failed to fetch cell summary" });
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch cell summary",
+      details: error.message,
+    });
   }
 });
 

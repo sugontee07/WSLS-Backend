@@ -8,6 +8,7 @@ import Cell from "../model/Cell.js";
 import { ImportBill, ExportBill, generateUniqueBillNumber } from "../model/Bill.js";
 import { User } from "../model/User.js";
 import ExportPdf from "../model/ExportPdf.js"; // โมเดล ExportPdf
+import ImportExportList from "../model/ImportExportList.js";
 
 // หา __dirname ใน ES Module
 const __filename = fileURLToPath(import.meta.url);
@@ -335,17 +336,56 @@ router.post("/withdraw", protect, async (req, res) => {
       });
     }
 
+    // ตรวจสอบว่า user มี employeeId หรือไม่
+    if (!user.employeeId) {
+      return res.status(400).json({
+        success: false,
+        error: "ผู้ใช้งานไม่มี employeeId",
+      });
+    }
+
     // ประมวลผลการเบิกสินค้า
     for (const { cellId, productId, quantity } of withdrawals) {
-      const cell = await Cell.findOne({ cellId });
+      // แยก cellId เพื่อตรวจสอบว่าเป็น subCell หรือไม่
+      let baseCellId = cellId;
+      let subCell = null;
+
+      if (cellId.endsWith("-A")) {
+        baseCellId = cellId.slice(0, -2); // เช่น "A-02-A" -> "A-02"
+        subCell = "subCellsA";
+      } else if (cellId.endsWith("-B")) {
+        baseCellId = cellId.slice(0, -2); // เช่น "A-02-B" -> "A-02"
+        subCell = "subCellsB";
+      }
+
+      // ดึงข้อมูล Cell
+      const cell = await Cell.findOne({ cellId: baseCellId });
       if (!cell) {
         return res.status(404).json({
           success: false,
-          message: `ไม่พบ Cell ที่มีรหัส ${cellId}`,
+          message: `ไม่พบ Cell ที่มีรหัส ${baseCellId}`,
         });
       }
 
-      const productIndex = cell.products.findIndex(
+      // ตรวจสอบ divisionType และเลือก array products ที่เหมาะสม
+      let targetProductsArray = cell.products;
+      if (subCell) {
+        if (cell.divisionType !== "dual") {
+          return res.status(400).json({
+            success: false,
+            message: `Cell ${baseCellId} ไม่ใช่ dual cell ไม่สามารถเบิกจาก ${subCell} ได้`,
+          });
+        }
+        targetProductsArray = subCell === "subCellsA" ? cell.subCellsA.products : cell.subCellsB.products;
+      } else if (cell.divisionType === "dual") {
+        return res.status(400).json({
+          success: false,
+          message: `Cell ${baseCellId} เป็น dual cell กรุณาระบุ subCell (เช่น ${baseCellId}-A หรือ ${baseCellId}-B)`,
+        });
+      }
+
+      // ค้นหาสินค้าใน array products
+      const productIndex = targetProductsArray.findIndex(
         (p) => p.product.productId === productId
       );
       if (productIndex === -1) {
@@ -355,7 +395,7 @@ router.post("/withdraw", protect, async (req, res) => {
         });
       }
 
-      const product = cell.products[productIndex];
+      const product = targetProductsArray[productIndex];
       if (product.quantity < quantity) {
         return res.status(400).json({
           success: false,
@@ -363,13 +403,16 @@ router.post("/withdraw", protect, async (req, res) => {
         });
       }
 
+      // อัปเดต quantity
       product.quantity -= quantity;
       if (product.quantity === 0) {
-        cell.products.splice(productIndex, 1);
+        targetProductsArray.splice(productIndex, 1);
       }
 
+      // เพิ่มข้อมูลใน billItems
       billItems.push({
-        cellId,
+        cellId: baseCellId,
+        subCell, // บันทึก subCell (เช่น "subCellsA" หรือ "subCellsB")
         product: {
           productId: product.product.productId,
           type: product.product.type || "unknown",
@@ -386,6 +429,9 @@ router.post("/withdraw", protect, async (req, res) => {
       await cell.save();
     }
 
+    // คำนวณจำนวนสินค้าที่เบิกออก
+    const totalQuantity = withdrawals.reduce((sum, w) => sum + w.quantity, 0);
+
     // สร้างบิลการเบิกสินค้า
     const billNumber = await generateUniqueBillNumber();
     const newBill = new ExportBill({
@@ -394,8 +440,28 @@ router.post("/withdraw", protect, async (req, res) => {
       type: "out",
       createdAt: billDate,
       createdBy: req.user._id,
+      employeeId: user.employeeId,
     });
     await newBill.save();
+
+    // บันทึกข้อมูลลง ImportExportList
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // ตั้งค่าให้เป็นวันที่ไม่มีเวลา
+
+    // ค้นหา record ของวันนี้
+    let record = await ImportExportList.findOne({ date: today });
+    if (!record) {
+      // ถ้าไม่พบ ให้สร้าง record ใหม่
+      record = new ImportExportList({
+        date: today,
+        inCount: 0,
+        outCount: totalQuantity,
+      });
+    } else {
+      // ถ้าพบ ให้เพิ่ม outCount
+      record.outCount += totalQuantity;
+    }
+    await record.save();
 
     // สร้าง PDF และบันทึก URL
     const pdfUrl = await generatePDF(billNumber, user);
@@ -403,6 +469,7 @@ router.post("/withdraw", protect, async (req, res) => {
       billNumber,
       pdfUrl,
       createdBy: req.user._id,
+      employeeId: user.employeeId,
     });
     await exportPdf.save();
 
@@ -413,7 +480,8 @@ router.post("/withdraw", protect, async (req, res) => {
       data: {
         billNumber,
         withdrawResults,
-        pdfUrl, // ส่ง URL ของ PDF กลับไป
+        employeeId: user.employeeId,
+        pdfUrl,
       },
     });
   } catch (error) {

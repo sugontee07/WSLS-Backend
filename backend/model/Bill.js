@@ -89,9 +89,14 @@ const billSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ["pending", "in", "out"], // เปลี่ยน enum และตัด "empty" ออก
+      enum: ["pending", "in", "out"],
       required: true,
-      default: "pending", // เปลี่ยน default เป็น "pending"
+      default: "pending",
+    },
+    employeeId: {
+      type: String,
+      required: false,
+      default: null,
     },
   },
   { timestamps: true }
@@ -119,7 +124,6 @@ billSchema.pre("save", function (next) {
       }
     }
   } else if (this.type === "pending") {
-    // สำหรับ type: "pending" อนุญาตให้มี items ได้ แต่ไม่ต้องมี cellId หรือ withdrawDate
     for (const item of this.items) {
       if (item.cellId || item.withdrawDate) {
         return next(new Error("ไม่ควรระบุ cellId และ withdrawDate สำหรับ type 'pending'"));
@@ -134,7 +138,7 @@ billSchema.pre("save", function (next) {
 
 // สร้างสองโมเดลสำหรับสองคอลเลกชัน
 const ImportBill = mongoose.model("ImportBill", billSchema, "importbills");
-const ExportBill = mongoose.model("ExportBill", billSchema, "exporbills");
+const ExportBill = mongoose.model("ExportBill", billSchema, "exportbills");
 
 // ส่งออกทั้งโมเดลและฟังก์ชัน
 export { ImportBill, ExportBill, generateUniqueBillNumber };

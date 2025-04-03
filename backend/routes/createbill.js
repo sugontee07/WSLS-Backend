@@ -6,7 +6,7 @@ import path from "path";
 import PdfMake from "pdfmake";
 import fs from "fs/promises";
 import bwipjs from "bwip-js";
-import ImpostPdf from "../model/ImpostPdf.js";
+import ImpostPdf from "../model/ImportPdf.js";
 import dotenv from "dotenv";
 
 dotenv.config();
