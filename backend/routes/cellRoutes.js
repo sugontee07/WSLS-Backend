@@ -47,7 +47,7 @@ const validateEditSubCells = (req, res, next) => {
 };
 
 // Route: สร้าง Cell
-router.post("/create/cells", validateCellData, async (req, res) => {
+router.post("/create/cells", protect, validateCellData, async (req, res) => {
   try {
     const { cellId, col, row, status } = req.validatedData;
     const existingCell = await Cell.findOne({ cellId });
@@ -80,7 +80,7 @@ router.post("/create/cells", validateCellData, async (req, res) => {
 });
 
 // Route: แก้ไขเซลล์ให้มี subCells
-router.put("/edit-subcells", validateEditSubCells, async (req, res) => {
+router.put("/edit-subcells", protect, validateEditSubCells, async (req, res) => {
   try {
     const { cellId, subCellChoice } = req.validatedData;
     const cell = await Cell.findOne({ cellId });
@@ -241,37 +241,50 @@ router.get("/cellsAll", async (req, res) => {
 
     // ปรับแต่งข้อมูลใน cells
     const formattedCells = cells.map(cell => {
-      // ฟังก์ชันสำหรับแปลงวันที่
+      // ฟังก์ชันสำหรับแปลงวันที่และโครงสร้าง product
       const formatProduct = (product) => {
         return {
           product: {
             productId: product.product.productId,
             type: product.product.type,
             name: product.product.name,
-            image: product.product.image,
+            image: product.product.image || "", // ใส่ค่า default ถ้า image เป็น null
+            endDate: product.endDate
+              ? new Date(product.endDate).toISOString().split("T")[0]
+              : null,
+            inDate: product.inDate
+              ? new Date(product.inDate).toISOString().split("T")[0]
+              : null,
           },
           quantity: product.quantity,
-          endDate: product.endDate ? new Date(product.endDate).toISOString().split("T")[0] : null,
-          inDate: product.inDate ? new Date(product.inDate).toISOString().split("T")[0] : null,
         };
       };
+
+      // คำนวณ total จาก quantity ใน products
+      const total = cell.products && cell.products.length > 0
+        ? cell.products.reduce((sum, product) => sum + product.quantity, 0)
+        : 0;
 
       // ปรับแต่ง products
       if (cell.products && cell.products.length > 0) {
         cell.products = cell.products.map(formatProduct);
       }
 
-      // ปรับแต่ง subCellsA.products
+      // ปรับแต่ง subCellsA.products (ถ้ามี)
       if (cell.subCellsA && cell.subCellsA.products && cell.subCellsA.products.length > 0) {
         cell.subCellsA.products = cell.subCellsA.products.map(formatProduct);
       }
 
-      // ปรับแต่ง subCellsB.products
+      // ปรับแต่ง subCellsB.products (ถ้ามี)
       if (cell.subCellsB && cell.subCellsB.products && cell.subCellsB.products.length > 0) {
         cell.subCellsB.products = cell.subCellsB.products.map(formatProduct);
       }
 
-      return cell;
+      // เพิ่มหรืออัปเดต total ใน cell
+      return {
+        ...cell,
+        total: total,
+      };
     });
 
     res.status(200).json({ success: true, data: formattedCells });

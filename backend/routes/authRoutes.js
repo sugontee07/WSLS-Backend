@@ -154,6 +154,8 @@ router.post('/login', async (req, res) => {
   }
 });
 
+
+// API: ส่งลิงก์รีเซ็ตรหัสผ่าน
 router.post('/forgot-password', async (req, res) => {
   console.log('Forgot password route hit:', req.body);
   try {
@@ -185,12 +187,26 @@ router.post('/forgot-password', async (req, res) => {
       });
     }
 
+    // ดีบัก: ตรวจสอบค่า FRONTEND_URL
+    console.log("FRONTEND_URL in forgot-password route:", process.env.FRONTEND_URL);
+
+    // ตรวจสอบว่า FRONTEND_URL ถูกกำหนดหรือไม่
+    if (!process.env.FRONTEND_URL) {
+      return res.status(500).json({
+        success: false,
+        message: 'การกำหนดค่าเซิร์ฟเวอร์ไม่ถูกต้อง',
+        error: 'FRONTEND_URL is not defined in environment variables',
+      });
+    }
+
     // สร้าง reset token
     const resetToken = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
       expiresIn: '24h',
     });
 
-    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`; // ใช้ env variable แทน hardcoded URL
+    // สร้าง reset link
+    const resetLink = `http://172.18.43.165:5173/reset-password?token=${resetToken}`;
+    console.log("Generated resetLink:", resetLink); // ดีบัก: ตรวจสอบ resetLink
 
     // ตรวจสอบ transporter
     if (!transporter) {

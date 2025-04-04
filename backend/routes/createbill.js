@@ -150,7 +150,6 @@ const generatePDF = async (billNumber, items) => {
   });
 };
 
-// เส้นทาง: สร้างบิลใหม่ (ไม่ตรวจสอบการล็อกอิน)
 router.post("/create", async (req, res) => {
   try {
     const { items, type } = req.body;
@@ -177,6 +176,9 @@ router.post("/create", async (req, res) => {
     }
 
     const updatedItems = [];
+    const productMap = new Map(); // Map เพื่อเช็คความซ้ำของ productId + endDate
+    const currentDate = new Date();
+
     for (const item of items) {
       const product = await Product.findOne({ productId: item.productId });
       if (!product) {
@@ -186,17 +188,29 @@ router.post("/create", async (req, res) => {
         });
       }
 
-      updatedItems.push({
-        product: {
-          productId: item.productId,
-          name: product.name,
-          type: product.type,
-          image: product.image || "",
-          endDate: new Date(item.endDate),
-          inDate: new Date(),
-        },
-        quantity: item.quantity,
-      });
+      // สร้าง key จาก productId และ endDate
+      const key = `${item.productId}_${item.endDate}`;
+
+      if (productMap.has(key)) {
+        // ถ้ามี key เดียวกัน (productId และ endDate เหมือนกัน) รวม quantity
+        const existingItem = productMap.get(key);
+        existingItem.quantity += item.quantity;
+      } else {
+        // ถ้า key ต่างกัน (productId หรือ endDate ไม่เหมือนกัน) สร้างรายการใหม่
+        const newItem = {
+          product: {
+            productId: item.productId,
+            name: product.name,
+            type: product.type,
+            image: product.image || "",
+            endDate: new Date(item.endDate),
+            inDate: currentDate,
+          },
+          quantity: item.quantity,
+        };
+        productMap.set(key, newItem);
+        updatedItems.push(newItem);
+      }
     }
 
     const billNumber = await generateUniqueBillNumber();
@@ -209,8 +223,10 @@ router.post("/create", async (req, res) => {
 
     await newBill.save();
 
-    // สร้าง PDF หลังจากบันทึกบิลสำเร็จ (ไม่ส่ง user)
     const pdfUrl = await generatePDF(billNumber, updatedItems);
+
+    // คำนวณ total จาก quantity ทั้งหมด
+    const total = updatedItems.reduce((sum, item) => sum + item.quantity, 0);
 
     res.status(201).json({
       success: true,
@@ -227,7 +243,7 @@ router.post("/create", async (req, res) => {
           },
           quantity: item.quantity,
         })),
-        totalItems: newBill.totalItems,
+        total: total, // เพิ่ม total เข้าไปใน response
         type: newBill.type,
         createdAt: newBill.createdAt,
         updatedAt: newBill.updatedAt,

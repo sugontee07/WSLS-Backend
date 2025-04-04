@@ -4,7 +4,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
 import Product from '../model/Product.js'; // แก้ path ให้ถูกต้อง
-import { protect, isAdmin } from '../middleware/auth.js';
+// import { protect, isAdmin } from '../middleware/auth.js';
 
 const router = express.Router();
 
@@ -92,7 +92,7 @@ const validateProduct = (req, res, next) => {
 };
 
 // Route: สร้าง Product ใหม่
-router.post('/create', protect, isAdmin, handleImageUpload, validateProduct, async (req, res) => {
+router.post('/create', handleImageUpload, validateProduct, async (req, res) => {
   try {
     const { productId, type, name } = req.body;
 
@@ -126,6 +126,43 @@ router.post('/create', protect, isAdmin, handleImageUpload, validateProduct, asy
   } catch (error) {
     console.error('Failed to create product:', error);
     res.status(500).json({ success: false, error: 'Failed to create product', details: error.message });
+  }
+});
+
+// Route: ดึงข้อมูล Product ทั้งหมด
+router.get('/products', async (req, res) => {
+  try {
+    // ดึงข้อมูลทั้งหมดจากโมเดล Product และเรียงลำดับตาม type
+    const products = await Product.find()
+      .sort({ type: 1 }) // เรียงลำดับตาม type (ascending)
+      .lean();
+
+    // ตรวจสอบว่ามีข้อมูลหรือไม่
+    if (!products || products.length === 0) {
+      return res.status(200).json({
+        success: true,
+        message: "ยังไม่มีสินค้าในระบบ",
+        data: [],
+      });
+    }
+
+    // ส่งข้อมูลกลับไปยังผู้ใช้
+    res.status(200).json({
+      success: true,
+      data: products.map(product => ({
+        productId: product.productId,
+        type: product.type,
+        name: product.name,
+        image: product.image ? `${process.env.BASE_URL}${product.image}` : null,
+      })),
+    });
+  } catch (error) {
+    console.error('Failed to fetch products:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch products',
+      details: error.message,
+    });
   }
 });
 

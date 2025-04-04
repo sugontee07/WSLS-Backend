@@ -80,6 +80,7 @@ const validateWithdrawProduct = (req, res, next) => {
   next();
 };
 
+
 // Route: ย้ายสินค้าจาก Cell หนึ่งไปยังอีก Cell หนึ่ง (รองรับหลายรายการและ subCell)
 router.post("/move-product", protect, validateMoveProduct, async (req, res) => {
   try {
@@ -89,43 +90,84 @@ router.post("/move-product", protect, validateMoveProduct, async (req, res) => {
     const cellsToUpdate = new Map();
 
     for (const { sourceCellId, targetCellId, productId, quantity } of moves) {
+      // แยก sourceCellId เพื่อตรวจสอบว่าเป็น subCell หรือไม่
+      const [sourceMainCellId, sourceSubCellPart] = sourceCellId.split('-').length > 2 
+        ? [sourceCellId.split('-').slice(0, 2).join('-'), sourceCellId.split('-')[2]] 
+        : [sourceCellId, null];
+
       // แยก targetCellId เพื่อตรวจสอบว่าเป็น subCell หรือไม่
-      const [mainCellId, subCellPart] = targetCellId.split('-').length > 2 
+      const [targetMainCellId, targetSubCellPart] = targetCellId.split('-').length > 2 
         ? [targetCellId.split('-').slice(0, 2).join('-'), targetCellId.split('-')[2]] 
         : [targetCellId, null];
 
       // ดึงข้อมูล Cell ต้นทางและปลายทาง
-      let sourceCell = cellsToUpdate.get(sourceCellId) || (await Cell.findOne({ cellId: sourceCellId }));
-      let targetCell = cellsToUpdate.get(mainCellId) || (await Cell.findOne({ cellId: mainCellId }));
+      let sourceCell = cellsToUpdate.get(sourceMainCellId) || (await Cell.findOne({ cellId: sourceMainCellId }));
+      let targetCell = cellsToUpdate.get(targetMainCellId) || (await Cell.findOne({ cellId: targetMainCellId }));
 
       // ตรวจสอบว่า Cell ต้นทางและปลายทางมีอยู่หรือไม่
       if (!sourceCell) {
-        return res.status(404).json({ success: false, error: `Source cell ${sourceCellId} not found` });
+        return res.status(404).json({ success: false, error: `Source cell ${sourceMainCellId} not found` });
       }
       if (!targetCell) {
-        return res.status(404).json({ success: false, error: `Target cell ${mainCellId} not found` });
+        return res.status(404).json({ success: false, error: `Target cell ${targetMainCellId} not found` });
       }
 
-      cellsToUpdate.set(sourceCellId, sourceCell);
-      cellsToUpdate.set(mainCellId, targetCell);
+      cellsToUpdate.set(sourceMainCellId, sourceCell);
+      cellsToUpdate.set(targetMainCellId, targetCell);
+
+      // ตัวแปรสำหรับ source
+      let sourceProducts;
+      let sourceStatus;
+
+      // ตรวจสอบว่า sourceCellId เป็น subCell หรือ Cell หลัก
+      if (sourceSubCellPart) {
+        if (sourceCell.divisionType !== "dual") {
+          return res.status(400).json({
+            success: false,
+            error: `Source cell ${sourceMainCellId} is not a dual-divided cell, cannot use subCell ${sourceCellId}`,
+          });
+        }
+
+        if (sourceSubCellPart === "A") {
+          sourceStatus = sourceCell.subCellsA.status;
+          sourceProducts = sourceCell.subCellsA.products || [];
+        } else if (sourceSubCellPart === "B") {
+          sourceStatus = sourceCell.subCellsB.status;
+          sourceProducts = sourceCell.subCellsB.products || [];
+        } else {
+          return res.status(400).json({
+            success: false,
+            error: `Invalid subCell part in ${sourceCellId}, must be 'A' or 'B'`,
+          });
+        }
+      } else {
+        if (sourceCell.divisionType === "dual") {
+          return res.status(400).json({
+            success: false,
+            error: `Cannot move products from a dual-divided cell ${sourceCellId} directly; specify subCell (e.g., ${sourceCellId}-A)`,
+          });
+        }
+        sourceStatus = sourceCell.status;
+        sourceProducts = sourceCell.products || [];
+      }
 
       // ตัวแปรสำหรับ target
       let targetProducts;
       let targetStatus;
 
       // ตรวจสอบว่า targetCellId เป็น subCell หรือ Cell หลัก
-      if (subCellPart) {
+      if (targetSubCellPart) {
         if (targetCell.divisionType !== "dual") {
           return res.status(400).json({
             success: false,
-            error: `Cell ${mainCellId} is not a dual-divided cell, cannot use subCell ${targetCellId}`,
+            error: `Target cell ${targetMainCellId} is not a dual-divided cell, cannot use subCell ${targetCellId}`,
           });
         }
 
-        if (subCellPart === "A") {
+        if (targetSubCellPart === "A") {
           targetStatus = targetCell.subCellsA.status;
           targetProducts = targetCell.subCellsA.products || [];
-        } else if (subCellPart === "B") {
+        } else if (targetSubCellPart === "B") {
           targetStatus = targetCell.subCellsB.status;
           targetProducts = targetCell.subCellsB.products || [];
         } else {
@@ -153,31 +195,16 @@ router.post("/move-product", protect, validateMoveProduct, async (req, res) => {
         });
       }
 
-      // ค้นหาสินค้าใน Cell ต้นทาง
-      let sourceProduct = null;
-      let sourceLocation = null;
-
-      if (sourceCell.products && sourceCell.products.length > 0) {
-        sourceProduct = sourceCell.products.find(p => p.product.productId === productId);
-        if (sourceProduct) sourceLocation = "products";
-      }
-
-      if (!sourceProduct && sourceCell.subCellsA && sourceCell.subCellsA.products && sourceCell.subCellsA.products.length > 0) {
-        sourceProduct = sourceCell.subCellsA.products.find(p => p.product.productId === productId);
-        if (sourceProduct) sourceLocation = "subCellsA";
-      }
-
-      if (!sourceProduct && sourceCell.subCellsB && sourceCell.subCellsB.products && sourceCell.subCellsB.products.length > 0) {
-        sourceProduct = sourceCell.subCellsB.products.find(p => p.product.productId === productId);
-        if (sourceProduct) sourceLocation = "subCellsB";
-      }
-
-      if (!sourceProduct) {
+      // ค้นหาสินค้าใน sourceProducts
+      const sourceProductIndex = sourceProducts.findIndex(p => p.product.productId === productId);
+      if (sourceProductIndex === -1) {
         return res.status(404).json({
           success: false,
           error: `Product ${productId} not found in source cell ${sourceCellId}`,
         });
       }
+
+      const sourceProduct = sourceProducts[sourceProductIndex];
 
       // ตรวจสอบจำนวนสินค้าที่มีใน Cell ต้นทาง
       if (sourceProduct.quantity < quantity) {
@@ -191,13 +218,16 @@ router.post("/move-product", protect, validateMoveProduct, async (req, res) => {
       sourceProduct.quantity -= quantity;
 
       if (sourceProduct.quantity === 0) {
-        if (sourceLocation === "products") {
-          sourceCell.products = sourceCell.products.filter(p => p.product.productId !== productId);
-        } else if (sourceLocation === "subCellsA") {
-          sourceCell.subCellsA.products = sourceCell.subCellsA.products.filter(p => p.product.productId !== productId);
-        } else if (sourceLocation === "subCellsB") {
-          sourceCell.subCellsB.products = sourceCell.subCellsB.products.filter(p => p.product.productId !== productId);
-        }
+        sourceProducts.splice(sourceProductIndex, 1);
+      }
+
+      // อัปเดต sourceProducts กลับไปที่ Cell หรือ subCell
+      if (sourceSubCellPart === "A") {
+        sourceCell.subCellsA.products = sourceProducts;
+      } else if (sourceSubCellPart === "B") {
+        sourceCell.subCellsB.products = sourceProducts;
+      } else {
+        sourceCell.products = sourceProducts;
       }
 
       // เพิ่มสินค้าใน Cell หรือ subCell ปลายทาง
@@ -219,9 +249,9 @@ router.post("/move-product", protect, validateMoveProduct, async (req, res) => {
       }
 
       // อัปเดต targetProducts กลับไปที่ Cell หรือ subCell
-      if (subCellPart === "A") {
+      if (targetSubCellPart === "A") {
         targetCell.subCellsA.products = targetProducts;
-      } else if (subCellPart === "B") {
+      } else if (targetSubCellPart === "B") {
         targetCell.subCellsB.products = targetProducts;
       } else {
         targetCell.products = targetProducts;
