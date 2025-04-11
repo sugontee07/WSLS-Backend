@@ -4,6 +4,9 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs/promises';
 import { protect, isAdmin } from '../middleware/auth.js';
+import dotenv from 'dotenv';
+
+dotenv.config();
 
 const router = express.Router();
 
@@ -39,7 +42,7 @@ router.get('/all', protect, isAdmin, async (req, res) => {
       const fullProfilePic = profilePic
         ? profilePic.startsWith('http')
           ? profilePic
-          : `http://172.18.43.37:3000${profilePic}`
+          : `${process.env.BASE_URL}${profilePic}` // เปลี่ยนเป็นดึงจาก BASE_URL
         : '';
       return {
         id: user._id,
@@ -79,7 +82,7 @@ router.get('/profile/me', protect, async (req, res) => {
     const fullProfilePic = profilePic
       ? profilePic.startsWith('http')
         ? profilePic
-        : `http://172.18.43.37:3000${profilePic}`
+        : `${process.env.BASE_URL}${profilePic}` // เปลี่ยนเป็นดึงจาก BASE_URL
       : '';
 
     const userResponse = {
@@ -182,7 +185,7 @@ router.put('/profile/me', protect, uploadProfile.single('profilePicture'), async
     const fullProfilePic = profilePic
       ? profilePic.startsWith('http')
         ? profilePic
-        : `http://172.18.43.37:3000${profilePic}`
+        : `${process.env.BASE_URL}${profilePic}`
       : '';
 
     const userResponse = {
@@ -288,7 +291,7 @@ router.put('/profile/:userId', protect, isAdmin, uploadProfile.single('profilePi
     const fullProfilePic = profilePic
       ? profilePic.startsWith('http')
         ? profilePic
-        : `http://172.18.43.37:3000${profilePic}`
+        : `${process.env.BASE_URL}${profilePic}`
       : '';
 
     const userResponse = {

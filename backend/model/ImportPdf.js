@@ -38,8 +38,8 @@ const importPdfSchema = new mongoose.Schema(
   }
 );
 
-// เพิ่ม index สำหรับ billNumber
-importPdfSchema.index({ billNumber: 1 }, { unique: true });
+// // เพิ่ม index สำหรับ billNumber
+// importPdfSchema.index({ billNumber: 1 }, { unique: true });
 
 // Middleware: จัดการ error เมื่อ billNumber ซ้ำ
 importPdfSchema.post("save", function (error, doc, next) {

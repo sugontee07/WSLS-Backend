@@ -205,7 +205,7 @@ router.post('/forgot-password', async (req, res) => {
     });
 
     // สร้าง reset link
-    const resetLink = `http://172.18.43.165:5173/reset-password?token=${resetToken}`;
+    const resetLink = `${process.env.FRONTEND_URL}/reset-password?token=${resetToken}`;
     console.log("Generated resetLink:", resetLink); // ดีบัก: ตรวจสอบ resetLink
 
     // ตรวจสอบ transporter
